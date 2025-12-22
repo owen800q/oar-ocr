@@ -17,9 +17,15 @@ keywords = [
 ]
 categories = ["computer-vision", "science"]
 
+[[bin]]
+name = "oar-ocr-server"
+path = "src/bin/server/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["download-binaries"]
 visualization = ["dep:ab_glyph"]
+cli = ["dep:axum", "dep:reqwest", "dep:tokio", "dep:tower-http", "dep:uuid"]
 # ONNX Runtime execution provider features
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
@@ -48,6 +54,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ab_glyph = { version = "0.2", optional = true }
 tokenizers = "0.20"
 clipper2 = "0.5.3"
+clap = { version = "4.5", features = ["derive", "env"] }
+# CLI/Server dependencies (optional)
+axum = { version = "0.8", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"], optional = true }
+tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
+uuid = { version = "1.11", features = ["v4"], optional = true }
 
 [dev-dependencies]
-clap = { version = "4.5.42", features = ["derive"] }
