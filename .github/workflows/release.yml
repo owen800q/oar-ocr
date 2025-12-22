@@ -82,8 +82,18 @@ jobs:
           echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
           echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
 
-      # Build the binary
-      - name: Build release binary
+      # Build the binary (Unix)
+      - name: Build release binary (Unix)
+        if: runner.os != 'Windows'
+        run: cargo build --release --features cli --target ${{ matrix.target }}
+
+      # Build the binary (Windows) - Force dynamic CRT for all C/C++ dependencies
+      - name: Build release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CFLAGS: /MD
+          CXXFLAGS: /MD
         run: cargo build --release --features cli --target ${{ matrix.target }}
 
       # Prepare artifact (Unix)
