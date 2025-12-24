@@ -14,6 +14,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   BINARY_NAME: oar-ocr-server
+  PDFIUM_VERSION: "7592"  # Chromium PDFium version from bblanchon/pdfium-binaries
 
 jobs:
   build:
@@ -28,30 +29,40 @@ jobs:
             os: ubuntu-latest
             artifact_name: oar-ocr-server-linux-x64
             cross: false
+            pdfium_name: pdfium-linux-x64
+            lib_name: libpdfium.so
 
           # Linux ARM64 (for AWS Lambda)
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact_name: oar-ocr-server-linux-arm64
             cross: true
+            pdfium_name: pdfium-linux-arm64
+            lib_name: libpdfium.so
 
           # macOS Intel
           - target: x86_64-apple-darwin
             os: macos-15-intel
             artifact_name: oar-ocr-server-macos-intel
             cross: false
+            pdfium_name: pdfium-mac-x64
+            lib_name: libpdfium.dylib
 
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             os: macos-14
             artifact_name: oar-ocr-server-macos-arm64
             cross: false
+            pdfium_name: pdfium-mac-arm64
+            lib_name: libpdfium.dylib
 
           # Windows x86_64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact_name: oar-ocr-server-windows-x64
             cross: false
+            pdfium_name: pdfium-win-x64
+            lib_name: pdfium.dll
 
     steps:
       - name: Checkout repository
@@ -66,6 +77,24 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # Download PDFium library from bblanchon/pdfium-binaries
+      - name: Download PDFium (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/${{ matrix.pdfium_name }}.tgz"
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -C pdfium
+          ls -la pdfium/lib/
+
+      - name: Download PDFium (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/${{ matrix.pdfium_name }}.tgz" -OutFile pdfium.tgz
+          mkdir pdfium
+          tar -xzf pdfium.tgz -C pdfium
+          Get-ChildItem pdfium/bin/
 
       # Install cross-compilation tools for Linux ARM64
       - name: Install cross-compilation tools (Linux ARM64)
@@ -96,23 +125,57 @@ jobs:
           CXXFLAGS: /MD
         run: cargo build --release --features cli --target ${{ matrix.target }}
 
-      # Prepare artifact (Unix)
+      # Prepare artifact with PDFium (Unix)
       - name: Prepare artifact (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/${{ env.BINARY_NAME }} dist/
-          cd dist
-          tar -czvf ../${{ matrix.artifact_name }}.tar.gz ${{ env.BINARY_NAME }}
+          cp pdfium/lib/${{ matrix.lib_name }} dist/
+          # Create README for the bundle
+          cat > dist/README.txt << 'EOF'
+          OAR-OCR Server Bundle
+          =====================
 
-      # Prepare artifact (Windows)
+          This bundle includes:
+          - oar-ocr-server: The OCR binary
+          - PDFium library: Required for PDF processing
+
+          Usage:
+            # Run the binary from this directory so it can find the PDFium library
+            ./oar-ocr-server ocr --file image.jpg --det-model <path> --rec-model <path> --dict-path <path>
+
+          For Linux/macOS, you may need to set LD_LIBRARY_PATH or DYLD_LIBRARY_PATH:
+            export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH  # Linux
+            export DYLD_LIBRARY_PATH=.:$DYLD_LIBRARY_PATH  # macOS
+          EOF
+          cd dist
+          tar -czvf ../${{ matrix.artifact_name }}.tar.gz *
+
+      # Prepare artifact with PDFium (Windows)
       - name: Prepare artifact (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target\${{ matrix.target }}\release\${{ env.BINARY_NAME }}.exe" -Destination "dist\"
-          Compress-Archive -Path "dist\${{ env.BINARY_NAME }}.exe" -DestinationPath "${{ matrix.artifact_name }}.zip"
+          Copy-Item "pdfium\bin\${{ matrix.lib_name }}" -Destination "dist\"
+          # Create README for the bundle
+          @"
+          OAR-OCR Server Bundle
+          =====================
+
+          This bundle includes:
+          - oar-ocr-server.exe: The OCR binary
+          - pdfium.dll: Required for PDF processing
+
+          Usage:
+            # Run the binary from this directory so it can find the PDFium library
+            .\oar-ocr-server.exe ocr --file image.jpg --det-model <path> --rec-model <path> --dict-path <path>
+
+          The DLL must be in the same directory as the executable or in your PATH.
+          "@ | Out-File -FilePath "dist\README.txt" -Encoding UTF8
+          Compress-Archive -Path "dist\*" -DestinationPath "${{ matrix.artifact_name }}.zip"
 
       # Upload artifact (Unix)
       - name: Upload artifact (Unix)
@@ -163,5 +226,33 @@ jobs:
           prerelease: false
           files: release/*
           generate_release_notes: true
+          body: |
+            ## Downloads
+
+            Each release bundle includes the OCR binary and PDFium library for PDF support.
+
+            | Platform | Download |
+            |----------|----------|
+            | Linux x64 | `oar-ocr-server-linux-x64.tar.gz` |
+            | Linux ARM64 | `oar-ocr-server-linux-arm64.tar.gz` |
+            | macOS Intel | `oar-ocr-server-macos-intel.tar.gz` |
+            | macOS Apple Silicon | `oar-ocr-server-macos-arm64.tar.gz` |
+            | Windows x64 | `oar-ocr-server-windows-x64.zip` |
+
+            ## Usage
+
+            Extract the archive and run the binary from the extracted directory:
+
+            ```bash
+            # Linux/macOS
+            tar -xzf oar-ocr-server-*.tar.gz
+            ./oar-ocr-server --help
+
+            # Windows
+            # Extract the zip file and run from that directory
+            .\oar-ocr-server.exe --help
+            ```
+
+            For PDF support, ensure the PDFium library is in the same directory as the binary.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

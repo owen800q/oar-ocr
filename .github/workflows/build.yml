@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  PDFIUM_VERSION: "7592"  # Chromium PDFium version from bblanchon/pdfium-binaries
 
 jobs:
   build:
@@ -20,23 +21,33 @@ jobs:
           # Linux x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            pdfium_name: pdfium-linux-x64
+            lib_name: libpdfium.so
 
           # Linux ARM64 (for AWS Lambda)
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+            pdfium_name: pdfium-linux-arm64
+            lib_name: libpdfium.so
 
           # macOS Intel
           - target: x86_64-apple-darwin
             os: macos-15-intel
+            pdfium_name: pdfium-mac-x64
+            lib_name: libpdfium.dylib
 
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             os: macos-14
+            pdfium_name: pdfium-mac-arm64
+            lib_name: libpdfium.dylib
 
           # Windows x86_64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            pdfium_name: pdfium-win-x64
+            lib_name: pdfium.dll
 
     steps:
       - name: Checkout repository
@@ -51,6 +62,24 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      # Download PDFium library from bblanchon/pdfium-binaries
+      - name: Download PDFium (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          curl -L -o pdfium.tgz "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/${{ matrix.pdfium_name }}.tgz"
+          mkdir -p pdfium
+          tar -xzf pdfium.tgz -C pdfium
+          ls -la pdfium/lib/
+
+      - name: Download PDFium (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${{ env.PDFIUM_VERSION }}/${{ matrix.pdfium_name }}.tgz" -OutFile pdfium.tgz
+          mkdir pdfium
+          tar -xzf pdfium.tgz -C pdfium
+          Get-ChildItem pdfium/bin/
 
       # Install cross-compilation tools for Linux ARM64
       - name: Install cross-compilation tools (Linux ARM64)
@@ -94,3 +123,22 @@ jobs:
         shell: pwsh
         run: |
           Get-Item "target\${{ matrix.target }}\release\oar-ocr-server.exe"
+
+      # Package binary with PDFium (Unix)
+      - name: Package with PDFium (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/oar-ocr-server dist/
+          cp pdfium/lib/${{ matrix.lib_name }} dist/
+          ls -la dist/
+
+      # Package binary with PDFium (Windows)
+      - name: Package with PDFium (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target\${{ matrix.target }}\release\oar-ocr-server.exe" dist/
+          Copy-Item "pdfium\bin\${{ matrix.lib_name }}" dist/
+          Get-ChildItem dist/
