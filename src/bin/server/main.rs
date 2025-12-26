@@ -18,6 +18,7 @@
 mod cli;
 mod config;
 mod ocr;
+mod pdf;
 mod server;
 
 use clap::{Parser, Subcommand};

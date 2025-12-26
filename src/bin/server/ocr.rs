@@ -26,6 +26,9 @@ pub enum OcrError {
 
     #[error("Model not found: {0}")]
     ModelNotFound(String),
+
+    #[error("PDF processing failed: {0}")]
+    Pdf(String),
 }
 
 /// Request to perform OCR on an image
@@ -74,6 +77,45 @@ impl OcrResponse {
             regions: Vec::new(),
             image_width: 0,
             image_height: 0,
+            error: Some(message),
+            processing_time_ms: None,
+        }
+    }
+}
+
+/// Response for a single page in a multi-page document
+#[derive(Debug, Serialize)]
+pub struct PageOcrResponse {
+    pub page: usize,
+    pub text: String,
+    pub regions: Vec<TextRegionResponse>,
+    pub image_width: u32,
+    pub image_height: u32,
+}
+
+/// Response from OCR processing of a multi-page document (e.g., PDF)
+#[derive(Debug, Serialize)]
+pub struct MultiPageOcrResponse {
+    pub success: bool,
+    /// Combined text from all pages
+    pub text: String,
+    /// Number of pages processed
+    pub page_count: usize,
+    /// Per-page results
+    pub pages: Vec<PageOcrResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processing_time_ms: Option<f64>,
+}
+
+impl MultiPageOcrResponse {
+    pub fn error(message: String) -> Self {
+        Self {
+            success: false,
+            text: String::new(),
+            page_count: 0,
+            pages: Vec::new(),
             error: Some(message),
             processing_time_ms: None,
         }
@@ -137,6 +179,66 @@ impl OcrEngine {
             .ok_or_else(|| OcrError::Processing("No results returned".to_string()))
     }
 
+    /// Process multiple images (e.g., PDF pages) and return OCR results for each
+    pub fn process_multiple(&self, images: Vec<RgbImage>) -> Result<Vec<OAROCRResult>, OcrError> {
+        self.ocr
+            .predict(images)
+            .map_err(|e| OcrError::Processing(e.to_string()))
+    }
+
+    /// Convert multiple page results to multi-page API response
+    pub fn results_to_multipage_response(
+        results: &[OAROCRResult],
+        processing_time_ms: f64,
+    ) -> MultiPageOcrResponse {
+        let mut pages = Vec::with_capacity(results.len());
+        let mut all_text = Vec::with_capacity(results.len());
+
+        for (idx, result) in results.iter().enumerate() {
+            let regions: Vec<TextRegionResponse> = result
+                .text_regions
+                .iter()
+                .map(|region| {
+                    let bbox = &region.bounding_box;
+                    TextRegionResponse {
+                        text: region
+                            .text
+                            .as_ref()
+                            .map(|t| t.to_string())
+                            .unwrap_or_default(),
+                        confidence: region.confidence.unwrap_or(0.0),
+                        bounding_box: BoundingBoxResponse {
+                            x_min: bbox.x_min(),
+                            y_min: bbox.y_min(),
+                            x_max: bbox.x_max(),
+                            y_max: bbox.y_max(),
+                        },
+                    }
+                })
+                .collect();
+
+            let page_text = result.concatenated_text("\n");
+            all_text.push(page_text.clone());
+
+            pages.push(PageOcrResponse {
+                page: idx + 1,
+                text: page_text,
+                regions,
+                image_width: result.input_img.width(),
+                image_height: result.input_img.height(),
+            });
+        }
+
+        MultiPageOcrResponse {
+            success: true,
+            text: all_text.join("\n\n--- Page Break ---\n\n"),
+            page_count: results.len(),
+            pages,
+            error: None,
+            processing_time_ms: Some(processing_time_ms),
+        }
+    }
+
     /// Convert internal result to API response
     pub fn result_to_response(result: &OAROCRResult, processing_time_ms: f64) -> OcrResponse {
         let regions: Vec<TextRegionResponse> = result
@@ -173,8 +275,8 @@ impl OcrEngine {
     }
 }
 
-/// Download an image from a URL
-pub async fn download_image(url: &str) -> Result<RgbImage, OcrError> {
+/// Download bytes from a URL
+pub async fn download_bytes(url: &str) -> Result<Vec<u8>, OcrError> {
     let response = reqwest::get(url)
         .await
         .map_err(|e| OcrError::Download(format!("Failed to fetch URL: {}", e)))?;
@@ -191,6 +293,13 @@ pub async fn download_image(url: &str) -> Result<RgbImage, OcrError> {
         .await
         .map_err(|e| OcrError::Download(format!("Failed to read response body: {}", e)))?;
 
+    Ok(bytes.to_vec())
+}
+
+/// Download an image from a URL
+#[allow(dead_code)]
+pub async fn download_image(url: &str) -> Result<RgbImage, OcrError> {
+    let bytes = download_bytes(url).await?;
     load_image_from_bytes(&bytes)
 }
 

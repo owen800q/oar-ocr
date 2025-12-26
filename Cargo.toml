@@ -25,7 +25,7 @@ required-features = ["cli"]
 [features]
 default = ["download-binaries"]
 visualization = ["dep:ab_glyph"]
-cli = ["dep:axum", "dep:reqwest", "dep:tokio", "dep:tower-http", "dep:uuid"]
+cli = ["dep:axum", "dep:reqwest", "dep:tokio", "dep:tower-http", "dep:uuid", "dep:pdfium-render"]
 # ONNX Runtime execution provider features
 cuda = ["ort/cuda"]
 tensorrt = ["ort/tensorrt"]
@@ -61,5 +61,6 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"], optional = true }
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 uuid = { version = "1.11", features = ["v4"], optional = true }
+pdfium-render = { version = "0.8", optional = true }
 
 [dev-dependencies]
