@@ -146,6 +146,8 @@ use oar_ocr::domain::tasks::{
     FormulaRecognitionConfig, LayoutDetectionConfig, TextDetectionConfig, TextRecognitionConfig,
 };
 use oar_ocr::oarocr::OARStructureBuilder;
+use oar_ocr::processors::LimitType;
+use oar_ocr::utils::load_image;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 use utils::parse_device_config;
@@ -382,7 +384,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    oar_ocr::utils::init_tracing();
+    utils::init_tracing();
     let args = Args::parse();
 
     info!("Running document structure analysis example");
@@ -479,7 +481,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_candidates: args.det_max_candidates,
         // PP-StructureV3 overall OCR defaults
         limit_side_len: Some(736),
-        limit_type: Some("min".to_string()),
+        limit_type: Some(LimitType::Min),
         max_side_len: None,
     };
 
@@ -587,13 +589,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (idx, image_path) in existing_images.iter().enumerate() {
         info!("\nProcessing image {}: {}", idx + 1, image_path.display());
 
-        let result = match analyzer.predict(image_path) {
+        // Load image using the utility function
+        let image = match load_image(image_path) {
+            Ok(img) => img,
+            Err(err) => {
+                error!("Failed to load {}: {}", image_path.display(), err);
+                continue;
+            }
+        };
+
+        let mut result = match analyzer.predict_image(image) {
             Ok(res) => res,
             Err(err) => {
                 error!("Failed to analyze {}: {}", image_path.display(), err);
                 continue;
             }
         };
+        result.input_path = std::sync::Arc::from(image_path.to_string_lossy().as_ref());
 
         // Save results to output directory
         if let Err(err) = result.save_results(

@@ -18,9 +18,8 @@ pub struct UVDocRectifierAdapter {
     model: UVDocModel,
     /// Adapter information
     info: AdapterInfo,
-    /// Task configuration
-    #[allow(dead_code)]
-    config: DocumentRectificationConfig,
+    /// Task configuration (stored for potential future use)
+    _config: DocumentRectificationConfig,
 }
 
 impl ModelAdapter for UVDocRectifierAdapter {
@@ -35,8 +34,15 @@ impl ModelAdapter for UVDocRectifierAdapter {
         input: <Self::Task as Task>::Input,
         _config: Option<&<Self::Task as Task>::Config>,
     ) -> Result<<Self::Task as Task>::Output, OCRError> {
+        let batch_len = input.images.len();
         // Use the UVDoc model to rectify images
-        let model_output = self.model.forward(input.images)?;
+        let model_output = self.model.forward(input.images).map_err(|e| {
+            OCRError::adapter_execution_error(
+                "UVDocRectifierAdapter",
+                format!("model forward (batch_size={})", batch_len),
+                e,
+            )
+        })?;
 
         // Adapt model output to task output
         Ok(DocumentRectificationOutput {
@@ -150,7 +156,7 @@ impl AdapterBuilder for UVDocRectifierAdapterBuilder {
         Ok(UVDocRectifierAdapter {
             model,
             info,
-            config: task_config,
+            _config: task_config,
         })
     }
 

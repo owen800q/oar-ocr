@@ -1,6 +1,6 @@
 [package]
 name = "oar-ocr"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Wang Xin <xinwang614@gmail.com>"]
@@ -33,6 +33,9 @@ directml = ["ort/directml"]
 coreml = ["ort/coreml"]
 webgpu = ["ort/webgpu"]
 openvino = ["ort/openvino"]
+# Auto-download ONNX Runtime binaries during build (enabled by default).
+# Set ORT_LIB_LOCATION to use a custom installation (skips download).
+# Use --no-default-features for offline/enterprise environments.
 download-binaries = ["ort/download-binaries"]
 
 [dependencies]
@@ -46,13 +49,13 @@ serde_json = "1.0"
 toml = "0.9"
 ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "tracing", "copy-dylibs"] }
 ndarray = "0.16"
-nalgebra = "0.32"
+nalgebra = "0.34"
 rayon = "1.8"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ab_glyph = { version = "0.2", optional = true }
-tokenizers = "0.20"
+tokenizers = { version = "0.22", default-features = false, features = ["progressbar", "onig"] }
 clipper2 = "0.5.3"
 clap = { version = "4.5", features = ["derive", "env"] }
 # CLI/Server dependencies (optional)
