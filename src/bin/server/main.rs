@@ -99,10 +99,22 @@ enum Commands {
     },
 }
 
+/// Initializes the tracing subscriber, logging to stderr (`RUST_LOG` overrides the `info` default).
+fn init_tracing() {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize tracing
-    oar_ocr::utils::init_tracing();
+    init_tracing();
 
     let cli = Cli::parse();
 

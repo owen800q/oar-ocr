@@ -1,14 +1,16 @@
 //! HTTP server for OCR processing.
 
 use crate::config::ServerConfig;
-use crate::ocr::{download_bytes, MultiPageOcrResponse, OcrEngine, OcrRequest, OcrResponse, SharedOcrEngine};
-use crate::pdf::{is_pdf_bytes, is_pdf_url, PdfProcessor};
+use crate::ocr::{
+    MultiPageOcrResponse, OcrEngine, OcrRequest, OcrResponse, SharedOcrEngine, download_bytes,
+};
+use crate::pdf::{PdfProcessor, is_pdf_bytes, is_pdf_url};
 use axum::{
+    Json, Router,
     extract::State,
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -110,7 +112,10 @@ async fn ocr_handler(
             error!(request_id = %request_id, error = %e, "Failed to download content");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(OcrResponse::error(format!("Failed to download: {}", e))).unwrap()),
+                Json(
+                    serde_json::to_value(OcrResponse::error(format!("Failed to download: {}", e)))
+                        .unwrap(),
+                ),
             );
         }
     };
@@ -136,7 +141,13 @@ async fn ocr_handler(
             error!(request_id = %request_id, error = %e, "Failed to decode image");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(OcrResponse::error(format!("Failed to decode image: {}", e))).unwrap()),
+                Json(
+                    serde_json::to_value(OcrResponse::error(format!(
+                        "Failed to decode image: {}",
+                        e
+                    )))
+                    .unwrap(),
+                ),
             );
         }
     };
@@ -156,7 +167,13 @@ async fn ocr_handler(
             error!(request_id = %request_id, error = %e, "OCR processing failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::to_value(OcrResponse::error(format!("OCR processing failed: {}", e))).unwrap()),
+                Json(
+                    serde_json::to_value(OcrResponse::error(format!(
+                        "OCR processing failed: {}",
+                        e
+                    )))
+                    .unwrap(),
+                ),
             );
         }
     };
@@ -174,7 +191,10 @@ async fn ocr_handler(
 
     let response = OcrEngine::result_to_response(&result, processing_time.as_secs_f64() * 1000.0);
 
-    (StatusCode::OK, Json(serde_json::to_value(response).unwrap()))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
 }
 
 /// Process a PDF request
@@ -191,9 +211,13 @@ async fn process_pdf_request(
             error!(request_id = %request_id, error = %e, "Failed to initialize PDF processor");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::to_value(MultiPageOcrResponse::error(
-                    format!("PDF processing not available: {}. Please install PDFium library.", e)
-                )).unwrap()),
+                Json(
+                    serde_json::to_value(MultiPageOcrResponse::error(format!(
+                        "PDF processing not available: {}. Please install PDFium library.",
+                        e
+                    )))
+                    .unwrap(),
+                ),
             );
         }
     };
@@ -205,9 +229,13 @@ async fn process_pdf_request(
             error!(request_id = %request_id, error = %e, "Failed to render PDF");
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::to_value(MultiPageOcrResponse::error(
-                    format!("Failed to render PDF: {}", e)
-                )).unwrap()),
+                Json(
+                    serde_json::to_value(MultiPageOcrResponse::error(format!(
+                        "Failed to render PDF: {}",
+                        e
+                    )))
+                    .unwrap(),
+                ),
             );
         }
     };
@@ -228,9 +256,13 @@ async fn process_pdf_request(
             error!(request_id = %request_id, error = %e, "OCR processing failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::to_value(MultiPageOcrResponse::error(
-                    format!("OCR processing failed: {}", e)
-                )).unwrap()),
+                Json(
+                    serde_json::to_value(MultiPageOcrResponse::error(format!(
+                        "OCR processing failed: {}",
+                        e
+                    )))
+                    .unwrap(),
+                ),
             );
         }
     };
@@ -249,9 +281,13 @@ async fn process_pdf_request(
         "PDF OCR completed"
     );
 
-    let response = OcrEngine::results_to_multipage_response(&results, processing_time.as_secs_f64() * 1000.0);
+    let response =
+        OcrEngine::results_to_multipage_response(&results, processing_time.as_secs_f64() * 1000.0);
 
-    (StatusCode::OK, Json(serde_json::to_value(response).unwrap()))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(response).unwrap()),
+    )
 }
 
 /// Graceful shutdown signal handler

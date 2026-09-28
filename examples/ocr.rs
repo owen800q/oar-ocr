@@ -21,11 +21,13 @@
 //! * `--rectification-model` - Optional document rectification model
 //! * `--text-type` - Text type hint (`seal` for curved seal text)
 //! * `--return-word-box` - Enable word-level boxes from recognition output
-//! * `--device` - Device to use (`cpu`, `cuda`, `cuda:0`, etc.)
+//! * `--device` - Device to use (`cpu`, `cuda:0`, `directml:0`, etc.)
+//! * CPU tuning: `--intra-threads`, `--global-thread-pool`, `--dynamic-block-base`
 //! * Detection config: `--det-score-thresh`, `--det-box-thresh`, `--det-unclip`, `--det-max-candidates`
 //! * Recognition config: `--rec-score-thresh`, `--rec-max-text-length`
 //! * Batch sizes: `--image-batch-size` (detection sessions), `--region-batch-size` (recognition)
-//! * `-o, --output-dir` - Directory to save visualizations (requires `visualization` feature)
+//! * `-o, --output-dir` - Directory to save output results
+//! * `--vis` - Enable visualization output
 //! * `--vis-font-path` - Optional font for visualization (set for non-Latin languages like Chinese)
 //! * `<IMAGES>...` - One or more document images to process
 //!
@@ -33,15 +35,16 @@
 //!
 //! ```bash
 //! cargo run --example ocr -- \
-//!   --det-model models/ppocrv4_mobile_det.onnx \
-//!   --rec-model models/ppocrv4_mobile_rec.onnx \
-//!   --dict-path models/ppocr_keys_v1.txt \
+//!   --det-model pp-ocrv4_mobile_det.onnx \
+//!   --rec-model pp-ocrv4_mobile_rec.onnx \
+//!   --dict-path ppocr_keys_v1.txt \
 //!   document1.jpg document2.jpg
 //! ```
 
 mod utils;
 
 use clap::Parser;
+use oar_ocr::core::OrtGlobalThreadPoolOptions;
 use oar_ocr::domain::tasks::{TextDetectionConfig, TextRecognitionConfig};
 use oar_ocr::oarocr::OAROCRBuilder;
 use oar_ocr::processors::LimitType;
@@ -49,10 +52,8 @@ use oar_ocr::utils::load_image;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{error, info, warn};
-use utils::parse_device_config;
-
-#[cfg(feature = "visualization")]
-use oar_ocr::utils::visualization::{VisualizationConfig, create_ocr_visualization};
+use utils::device_config::{apply_ort_overrides, parse_device_config};
+use utils::visualization::{VisualizationConfig, create_ocr_visualization};
 
 /// Command-line arguments for the OCR pipeline example
 #[derive(Parser)]
@@ -91,9 +92,29 @@ struct Args {
     #[arg(long, default_value_t = false)]
     return_word_box: bool,
 
-    /// Device to use for inference (cpu, cuda, cuda:0, etc.)
+    /// Device (cpu, cuda:N, directml:N, coreml[:gpu|ane|cpu], coreml-nn[:...])
     #[arg(long, default_value = "cpu")]
     device: String,
+
+    /// ONNX Runtime intra-op thread count (defaults to the runtime's CPU policy)
+    #[arg(long)]
+    intra_threads: Option<usize>,
+
+    /// ONNX Runtime inter-op thread count (only useful with parallel execution)
+    #[arg(long)]
+    inter_threads: Option<usize>,
+
+    /// Share one ONNX Runtime thread pool across the detector and recognizer
+    #[arg(long, default_value_t = false)]
+    global_thread_pool: bool,
+
+    /// Let ONNX Runtime execute independent graph branches in parallel
+    #[arg(long, default_value_t = false)]
+    parallel_execution: bool,
+
+    /// Enable ONNX Runtime's dynamic thread-block scheduling with this base value
+    #[arg(long)]
+    dynamic_block_base: Option<u32>,
 
     /// Text detection score threshold (default: 0.3)
     #[arg(long, default_value_t = 0.3)]
@@ -127,10 +148,6 @@ struct Args {
     #[arg(long, default_value_t = 0.0)]
     rec_score_thresh: f32,
 
-    /// Maximum text length for recognition (default: 100)
-    #[arg(long, default_value_t = 100)]
-    rec_max_text_length: usize,
-
     /// Detection session pool size (sets detection batch concurrency)
     #[arg(long)]
     image_batch_size: Option<usize>,
@@ -139,13 +156,31 @@ struct Args {
     #[arg(long)]
     region_batch_size: Option<usize>,
 
-    /// Directory to save visualization images (requires `visualization` feature)
-    #[cfg(feature = "visualization")]
+    /// Repeat inference to expose warm-up and steady-state latency.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    repeat: u32,
+
+    /// ONNX Runtime intra-op worker threads (CPU tuning experiment).
+    #[arg(long)]
+    ort_intra_threads: Option<usize>,
+
+    /// ONNX Runtime inter-op worker threads (only useful with parallel execution).
+    #[arg(long)]
+    ort_inter_threads: Option<usize>,
+
+    /// Enable ONNX Runtime parallel graph execution.
+    #[arg(long)]
+    ort_parallel_execution: bool,
+
+    /// Directory to save output results (visualizations, etc.)
     #[arg(short = 'o', long = "output-dir")]
     output_dir: Option<PathBuf>,
 
+    /// Enable visualization output
+    #[arg(long)]
+    vis: bool,
+
     /// Custom font path for visualization (useful for Chinese or other non-Latin text)
-    #[cfg(feature = "visualization")]
     #[arg(long = "vis-font-path")]
     vis_font_path: Option<PathBuf>,
 }
@@ -192,7 +227,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build device/ORT configuration
-    let ort_config = parse_device_config(&args.device)?;
+    if args.global_thread_pool {
+        let mut pool = OrtGlobalThreadPoolOptions::new();
+        if let Some(threads) = args.intra_threads {
+            pool = pool.with_intra_threads(threads);
+        }
+        if let Some(threads) = args.inter_threads {
+            pool = pool.with_inter_threads(threads);
+        }
+        if !pool.commit()? {
+            return Err("ONNX Runtime was initialized before the global thread pool".into());
+        }
+    }
+
+    let mut ort_config = parse_device_config(&args.device)?;
+    if args.intra_threads.is_some()
+        || args.inter_threads.is_some()
+        || args.parallel_execution
+        || args.dynamic_block_base.is_some()
+    {
+        let mut config = ort_config.take().unwrap_or_default();
+        if !args.global_thread_pool {
+            if let Some(threads) = args.intra_threads {
+                config = config.with_intra_threads(threads);
+            }
+            if let Some(threads) = args.inter_threads {
+                config = config.with_inter_threads(threads);
+            }
+        }
+        if args.parallel_execution {
+            config = config.with_parallel_execution(true);
+        }
+        if let Some(base) = args.dynamic_block_base {
+            config = config.add_config_entry("session.dynamic_block_base", base.to_string());
+        }
+        ort_config = Some(config);
+    }
+    let ort_config = apply_ort_overrides(
+        ort_config,
+        args.ort_intra_threads,
+        args.ort_inter_threads,
+        args.ort_parallel_execution,
+    )?;
 
     // Prepare model configs
     let det_config = TextDetectionConfig {
@@ -219,7 +295,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rec_config = TextRecognitionConfig {
         score_threshold: args.rec_score_thresh,
-        max_text_length: args.rec_max_text_length,
     };
 
     // Construct OCR pipeline
@@ -228,10 +303,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .text_recognition_config(rec_config)
         .return_word_box(args.return_word_box);
 
+    if let Some(model) = &args.document_image_orientation_model {
+        builder = builder.with_document_image_orientation_classification(model);
+    }
+    if let Some(model) = &args.text_line_orientation_model {
+        builder = builder.with_text_line_orientation_classification(model);
+    }
+    if let Some(model) = &args.rectification_model {
+        builder = builder.with_document_image_rectification(model);
+    }
+
     if let Some(config) = ort_config.clone() {
         builder = builder.ort_session(config);
     }
-
     if let Some(size) = args.image_batch_size {
         builder = builder.image_batch_size(size);
     }
@@ -268,11 +352,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("No images could be loaded".into());
     }
 
-    // Run inference
+    // Run inference. Repetition is useful when CoreML compiles or specializes
+    // graph partitions lazily on the first prediction. Only the warm-up runs
+    // need a cloned image set; the final (or only) run can move `images`
+    // directly, so `--repeat 1` (the default) never pays a clone.
+    for iteration in 1..args.repeat {
+        let start = Instant::now();
+        ocr.predict(images.clone())?;
+        info!(
+            "OCR completed (run {}/{}) in {:.2}ms",
+            iteration,
+            args.repeat,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     let start = Instant::now();
     let results = ocr.predict(images)?;
     info!(
-        "OCR completed in {:.2}ms",
+        "OCR completed (run {}/{}) in {:.2}ms",
+        args.repeat,
+        args.repeat,
         start.elapsed().as_secs_f64() * 1000.0
     );
 
@@ -331,10 +430,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Save visualizations when enabled
-    #[cfg(feature = "visualization")]
-    if let Some(output_dir) = args.output_dir {
-        std::fs::create_dir_all(&output_dir)?;
+    // Save visualizations if --vis is enabled
+    if args.vis {
+        let output_dir = args
+            .output_dir
+            .as_ref()
+            .ok_or("--output-dir is required when --vis is enabled")?;
+
+        std::fs::create_dir_all(output_dir)?;
         let vis_config = if let Some(font_path) = args.vis_font_path {
             VisualizationConfig::with_font_path(&font_path).unwrap_or_else(|err| {
                 warn!(
@@ -348,6 +451,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             VisualizationConfig::with_system_font()
         };
 
+        info!("\nSaving visualizations to: {}", output_dir.display());
+
         for (path, result) in existing_images.iter().zip(results.iter()) {
             let vis_img = create_ocr_visualization(result, &vis_config)?;
             let filename = path
@@ -357,7 +462,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| "visualization.jpg".to_string());
             let output_path = output_dir.join(filename);
             vis_img.save(&output_path)?;
-            info!("Saved visualization to {}", output_path.display());
+            info!("  Saved: {}", output_path.display());
         }
     }
 

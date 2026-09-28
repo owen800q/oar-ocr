@@ -50,11 +50,25 @@ impl PdfProcessor {
         // Try to bind to system PDFium or use bundled one
         let pdfium = Pdfium::new(
             Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-                .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/usr/lib")))
-                .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/usr/local/lib")))
-                .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("/opt/homebrew/lib")))
+                .or_else(|_| {
+                    Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+                        "/usr/lib",
+                    ))
+                })
+                .or_else(|_| {
+                    Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+                        "/usr/local/lib",
+                    ))
+                })
+                .or_else(|_| {
+                    Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+                        "/opt/homebrew/lib",
+                    ))
+                })
                 .or_else(|_| Pdfium::bind_to_system_library())
-                .map_err(|e| PdfError::InitError(format!("Could not find PDFium library: {}", e)))?,
+                .map_err(|e| {
+                    PdfError::InitError(format!("Could not find PDFium library: {}", e))
+                })?,
         );
 
         Ok(Self { pdfium, config })
@@ -137,16 +151,15 @@ impl PdfProcessor {
             .render_form_data(true)
             .render_annotations(true);
 
-        let bitmap = page
-            .render_with_config(&render_config)
-            .map_err(|e| PdfError::RenderError {
-                page: 0,
-                message: e.to_string(),
-            })?;
+        let bitmap =
+            page.render_with_config(&render_config)
+                .map_err(|e| PdfError::RenderError {
+                    page: 0,
+                    message: e.to_string(),
+                })?;
 
         // Convert to DynamicImage then to RgbImage
-        let dynamic_image = bitmap
-            .as_image();
+        let dynamic_image = bitmap.as_image();
 
         Ok(dynamic_image.to_rgb8())
     }
@@ -171,7 +184,7 @@ pub fn is_pdf_bytes(bytes: &[u8]) -> bool {
 /// Check if a file path has a PDF extension
 pub fn is_pdf_path(path: &Path) -> bool {
     path.extension()
-        .map(|ext| ext.to_ascii_lowercase() == "pdf")
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
         .unwrap_or(false)
 }
 

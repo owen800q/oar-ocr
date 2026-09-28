@@ -7,6 +7,7 @@
 //!
 //! - Complete OCR pipeline from image to text
 //! - High-level builder APIs for easy pipeline configuration
+//! - Models load from file paths or in-memory bytes (`include_bytes!`)
 //! - Model adapter system for easy model swapping
 //! - Batch processing support
 //! - ONNX Runtime integration for fast inference
@@ -44,12 +45,12 @@
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create OCR pipeline with required components
 //! let ocr = OAROCRBuilder::new(
-//!     "models/text_detection.onnx",
-//!     "models/text_recognition.onnx",
-//!     "models/character_dict.txt"
+//!     "text_detection.onnx",
+//!     "text_recognition.onnx",
+//!     "character_dict.txt"
 //! )
-//! .with_document_image_orientation_classification("models/doc_orient.onnx")
-//! .with_text_line_orientation_classification("models/line_orient.onnx")
+//! .with_document_image_orientation_classification("doc_orient.onnx")
+//! .with_text_line_orientation_classification("line_orient.onnx")
 //! .image_batch_size(4)
 //! .region_batch_size(32)
 //! .build()?;
@@ -77,13 +78,14 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create structure analysis pipeline
-//! let structure = OARStructureBuilder::new("models/layout_detection.onnx")
-//!     .with_table_classification("models/table_classification.onnx")
-//!     .with_table_cell_detection("models/table_cell_detection.onnx", "wired")
-//!     .with_table_structure_recognition("models/table_structure.onnx", "wired")
+//! let structure = OARStructureBuilder::new("layout_detection.onnx")
+//!     .with_table_classification("table_classification.onnx")
+//!     .with_table_cell_detection("table_cell_detection.onnx", "wired")
+//!     .with_table_structure_recognition("table_structure.onnx", "wired")
+//!     .table_structure_dict_path("table_structure_dict.txt")
 //!     .with_formula_recognition(
-//!         "models/formula_recognition.onnx",
-//!         "models/tokenizer.json",
+//!         "formula_recognition.onnx",
+//!         "tokenizer.json",
 //!         "pp_formulanet"
 //!     )
 //!     .build()?;
@@ -98,19 +100,51 @@
 //! # }
 //! ```
 
-// Core modules
-pub mod core;
-pub mod domain;
-pub mod models;
+// Re-export core modules from oar-ocr-core
+pub mod core {
+    pub use oar_ocr_core::core::*;
+}
 
-pub mod oarocr;
-pub mod predictors;
-pub mod processors;
+/// Auto-download of model files from ModelScope.
+///
+/// Available only when the `auto-download` feature is enabled. See
+/// [`oar_ocr_core::core::download`] for details. When the feature is on,
+/// the high-level OCR builders accept either a filesystem path or a bare
+/// registered file name (e.g. `"pp-ocrv5_mobile_det.onnx"`) for any model
+/// path argument.
+#[cfg(feature = "auto-download")]
+pub mod download {
+    pub use oar_ocr_core::core::download::*;
+}
+
+pub mod domain {
+    pub use oar_ocr_core::domain::*;
+}
+
+pub mod models {
+    pub use oar_ocr_core::models::*;
+}
+
+pub mod processors {
+    pub use oar_ocr_core::processors::*;
+}
+
+pub mod predictors {
+    pub use oar_ocr_core::predictors::*;
+}
+
+// Utils module with re-exports from core and OCR-specific visualization
 pub mod utils;
+
+// High-level OCR API (remains in main crate)
+pub mod oarocr;
+
+// Re-export derive macros for convenient use
+pub use oar_ocr_derive::{ConfigValidator, TaskPredictorBuilder};
 
 /// Prelude module for convenient imports.
 ///
-///  Bring the essentials into scope with a single use statement:
+/// Bring the essentials into scope with a single use statement:
 ///
 /// ```rust
 /// use oar_ocr::prelude::*;
@@ -133,11 +167,11 @@ pub mod prelude {
     };
 
     // Error Handling
-    pub use crate::core::{OCRError, OcrResult};
+    pub use oar_ocr_core::core::{OCRError, OcrResult};
 
     // Image Utilities
-    pub use crate::utils::{load_image, load_images};
+    pub use oar_ocr_core::utils::{load_image, load_images};
 
     // Predictors (high-level API)
-    pub use crate::predictors::*;
+    pub use oar_ocr_core::predictors::*;
 }

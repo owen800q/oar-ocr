@@ -40,14 +40,6 @@ jobs:
             pdfium_name: pdfium-linux-arm64
             lib_name: libpdfium.so
 
-          # macOS Intel
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            artifact_name: oar-ocr-server-macos-intel
-            cross: false
-            pdfium_name: pdfium-mac-x64
-            lib_name: libpdfium.dylib
-
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             os: macos-14
@@ -235,7 +227,6 @@ jobs:
             |----------|----------|
             | Linux x64 | `oar-ocr-server-linux-x64.tar.gz` |
             | Linux ARM64 | `oar-ocr-server-linux-arm64.tar.gz` |
-            | macOS Intel | `oar-ocr-server-macos-intel.tar.gz` |
             | macOS Apple Silicon | `oar-ocr-server-macos-arm64.tar.gz` |
             | Windows x64 | `oar-ocr-server-windows-x64.zip` |
 

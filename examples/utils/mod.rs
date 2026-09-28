@@ -1,8 +1,11 @@
 //! Common utilities for examples.
 
 pub mod device_config;
-
-pub use device_config::parse_device_config;
+#[allow(dead_code)]
+pub mod markdown;
+pub mod pdf;
+#[allow(dead_code)]
+pub mod visualization;
 
 /// Initializes the tracing subscriber for logging in examples.
 pub fn init_tracing() {
@@ -13,6 +16,6 @@ pub fn init_tracing() {
 
     tracing_subscriber::registry()
         .with(env_filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 }

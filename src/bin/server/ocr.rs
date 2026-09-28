@@ -5,7 +5,7 @@ use image::RgbImage;
 #[cfg(feature = "cuda")]
 use oar_ocr::core::config::OrtExecutionProvider;
 use oar_ocr::core::config::OrtSessionConfig;
-use oar_ocr::oarocr::{OAROCRBuilder, OAROCRResult, OAROCR};
+use oar_ocr::oarocr::{OAROCR, OAROCRBuilder, OAROCRResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -349,7 +349,6 @@ fn parse_device_config(device: &str) -> Result<Option<OrtSessionConfig>, OcrErro
                     gpu_mem_limit: None,
                     arena_extend_strategy: None,
                     cudnn_conv_algo_search: None,
-                    do_copy_in_default_stream: None,
                     cudnn_conv_use_max_workspace: None,
                 },
                 OrtExecutionProvider::CPU,

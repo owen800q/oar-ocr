@@ -1,8 +1,8 @@
 //! CLI mode for OCR processing.
 
 use crate::config::OcrConfig;
-use crate::ocr::{download_bytes, load_image_from_path, OcrEngine, OcrError};
-use crate::pdf::{is_pdf_bytes, is_pdf_path, is_pdf_url, PdfProcessor};
+use crate::ocr::{OcrEngine, OcrError, download_bytes, load_image_from_path};
+use crate::pdf::{PdfProcessor, is_pdf_bytes, is_pdf_path, is_pdf_url};
 use std::path::Path;
 use std::time::Instant;
 use tracing::info;
@@ -18,7 +18,11 @@ pub async fn process_url(
     info!("Downloading content from URL...");
     let bytes = download_bytes(url).await?;
     let download_time = start.elapsed();
-    info!("Downloaded {} bytes in {:.2}ms", bytes.len(), download_time.as_secs_f64() * 1000.0);
+    info!(
+        "Downloaded {} bytes in {:.2}ms",
+        bytes.len(),
+        download_time.as_secs_f64() * 1000.0
+    );
 
     // Check if it's a PDF
     if is_pdf_url(url) || is_pdf_bytes(&bytes) {
@@ -31,15 +35,25 @@ pub async fn process_url(
         info!("Initializing OCR engine...");
         let engine = OcrEngine::new(config)?;
         let init_time = start.elapsed() - download_time;
-        info!("Engine initialized in {:.2}ms", init_time.as_secs_f64() * 1000.0);
+        info!(
+            "Engine initialized in {:.2}ms",
+            init_time.as_secs_f64() * 1000.0
+        );
 
         info!("Processing image ({}x{})...", image.width(), image.height());
         let ocr_start = Instant::now();
         let result = engine.process(image)?;
         let processing_time = ocr_start.elapsed();
-        info!("OCR completed in {:.2}ms", processing_time.as_secs_f64() * 1000.0);
+        info!(
+            "OCR completed in {:.2}ms",
+            processing_time.as_secs_f64() * 1000.0
+        );
 
-        output_result(&result, output_format, processing_time.as_secs_f64() * 1000.0)?;
+        output_result(
+            &result,
+            output_format,
+            processing_time.as_secs_f64() * 1000.0,
+        )?;
     }
 
     Ok(())
@@ -66,15 +80,25 @@ pub fn process_file(
         info!("Initializing OCR engine...");
         let engine = OcrEngine::new(config)?;
         let init_time = start.elapsed() - load_time;
-        info!("Engine initialized in {:.2}ms", init_time.as_secs_f64() * 1000.0);
+        info!(
+            "Engine initialized in {:.2}ms",
+            init_time.as_secs_f64() * 1000.0
+        );
 
         info!("Processing image ({}x{})...", image.width(), image.height());
         let ocr_start = Instant::now();
         let result = engine.process(image)?;
         let processing_time = ocr_start.elapsed();
-        info!("OCR completed in {:.2}ms", processing_time.as_secs_f64() * 1000.0);
+        info!(
+            "OCR completed in {:.2}ms",
+            processing_time.as_secs_f64() * 1000.0
+        );
 
-        output_result(&result, output_format, processing_time.as_secs_f64() * 1000.0)?;
+        output_result(
+            &result,
+            output_format,
+            processing_time.as_secs_f64() * 1000.0,
+        )?;
     }
 
     Ok(())
@@ -88,14 +112,18 @@ fn process_pdf_bytes(
     start: Instant,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing PDF processor...");
-    let pdf_processor = PdfProcessor::new_default()
-        .map_err(|e| OcrError::Pdf(e.to_string()))?;
+    let pdf_processor = PdfProcessor::new_default().map_err(|e| OcrError::Pdf(e.to_string()))?;
 
     info!("Rendering PDF pages to images...");
-    let images = pdf_processor.render_pdf_bytes(bytes)
+    let images = pdf_processor
+        .render_pdf_bytes(bytes)
         .map_err(|e| OcrError::Pdf(e.to_string()))?;
     let render_time = start.elapsed();
-    info!("Rendered {} pages in {:.2}ms", images.len(), render_time.as_secs_f64() * 1000.0);
+    info!(
+        "Rendered {} pages in {:.2}ms",
+        images.len(),
+        render_time.as_secs_f64() * 1000.0
+    );
 
     process_pdf_images(images, config, output_format, start)
 }
@@ -108,14 +136,18 @@ fn process_pdf_file(
     start: Instant,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Initializing PDF processor...");
-    let pdf_processor = PdfProcessor::new_default()
-        .map_err(|e| OcrError::Pdf(e.to_string()))?;
+    let pdf_processor = PdfProcessor::new_default().map_err(|e| OcrError::Pdf(e.to_string()))?;
 
     info!("Rendering PDF pages to images...");
-    let images = pdf_processor.render_pdf_file(path)
+    let images = pdf_processor
+        .render_pdf_file(path)
         .map_err(|e| OcrError::Pdf(e.to_string()))?;
     let render_time = start.elapsed();
-    info!("Rendered {} pages in {:.2}ms", images.len(), render_time.as_secs_f64() * 1000.0);
+    info!(
+        "Rendered {} pages in {:.2}ms",
+        images.len(),
+        render_time.as_secs_f64() * 1000.0
+    );
 
     process_pdf_images(images, config, output_format, start)
 }
@@ -132,15 +164,25 @@ fn process_pdf_images(
     info!("Initializing OCR engine...");
     let engine = OcrEngine::new(config)?;
     let init_time = start.elapsed();
-    info!("Engine initialized in {:.2}ms", init_time.as_secs_f64() * 1000.0);
+    info!(
+        "Engine initialized in {:.2}ms",
+        init_time.as_secs_f64() * 1000.0
+    );
 
     info!("Processing {} PDF pages...", page_count);
     let ocr_start = Instant::now();
     let results = engine.process_multiple(images)?;
     let processing_time = ocr_start.elapsed();
-    info!("OCR completed in {:.2}ms", processing_time.as_secs_f64() * 1000.0);
+    info!(
+        "OCR completed in {:.2}ms",
+        processing_time.as_secs_f64() * 1000.0
+    );
 
-    output_multipage_result(&results, output_format, processing_time.as_secs_f64() * 1000.0)?;
+    output_multipage_result(
+        &results,
+        output_format,
+        processing_time.as_secs_f64() * 1000.0,
+    )?;
 
     Ok(())
 }
@@ -159,9 +201,13 @@ fn output_result(
         "text" => {
             println!("{}", result.concatenated_text("\n"));
         }
-        "pretty" | _ => {
+        _ => {
             println!("\n=== OCR Results ===");
-            println!("Image size: {}x{}", result.input_img.width(), result.input_img.height());
+            println!(
+                "Image size: {}x{}",
+                result.input_img.width(),
+                result.input_img.height()
+            );
             println!("Processing time: {:.2}ms", processing_time_ms);
             println!("Text regions: {}", result.text_regions.len());
             println!();
@@ -179,12 +225,7 @@ fn output_result(
                     let confidence = region.confidence.unwrap_or(0.0) * 100.0;
                     let bbox = &region.bounding_box;
 
-                    println!(
-                        "[{}] \"{}\" ({:.1}%)",
-                        idx + 1,
-                        text,
-                        confidence
-                    );
+                    println!("[{}] \"{}\" ({:.1}%)", idx + 1, text, confidence);
                     println!(
                         "    Position: [{:.1}, {:.1}] - [{:.1}, {:.1}]",
                         bbox.x_min(),
@@ -211,7 +252,8 @@ fn output_multipage_result(
 ) -> Result<(), OcrError> {
     match format {
         "json" => {
-            let response = crate::ocr::OcrEngine::results_to_multipage_response(results, processing_time_ms);
+            let response =
+                crate::ocr::OcrEngine::results_to_multipage_response(results, processing_time_ms);
             println!("{}", serde_json::to_string(&response).unwrap());
         }
         "text" => {
@@ -222,7 +264,7 @@ fn output_multipage_result(
                 println!("{}", result.concatenated_text("\n"));
             }
         }
-        "pretty" | _ => {
+        _ => {
             println!("\n=== PDF OCR Results ===");
             println!("Total pages: {}", results.len());
             println!("Processing time: {:.2}ms", processing_time_ms);
@@ -230,7 +272,11 @@ fn output_multipage_result(
 
             for (idx, result) in results.iter().enumerate() {
                 println!("========== Page {} ==========", idx + 1);
-                println!("Image size: {}x{}", result.input_img.width(), result.input_img.height());
+                println!(
+                    "Image size: {}x{}",
+                    result.input_img.width(),
+                    result.input_img.height()
+                );
                 println!("Text regions: {}", result.text_regions.len());
                 println!();
 
@@ -246,12 +292,7 @@ fn output_multipage_result(
                             .unwrap_or_else(|| "<no text>".to_string());
                         let confidence = region.confidence.unwrap_or(0.0) * 100.0;
 
-                        println!(
-                            "[{}] \"{}\" ({:.1}%)",
-                            region_idx + 1,
-                            text,
-                            confidence
-                        );
+                        println!("[{}] \"{}\" ({:.1}%)", region_idx + 1, text, confidence);
                     }
                     println!();
                     println!("--- Page Text ---");
