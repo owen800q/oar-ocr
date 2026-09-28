@@ -5,7 +5,7 @@ use image::RgbImage;
 #[cfg(feature = "cuda")]
 use oar_ocr::core::config::OrtExecutionProvider;
 use oar_ocr::core::config::OrtSessionConfig;
-use oar_ocr::oarocr::{OAROCRBuilder, OAROCRResult, OAROCR};
+use oar_ocr::oarocr::{OAROCR, OAROCRBuilder, OAROCRResult};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
