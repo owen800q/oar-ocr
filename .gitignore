@@ -1,5 +1,6 @@
-.oar/
-output/
+/.oar/
+/output/
+/models/
 
 # Local test files - downloaded at runtime
 models/

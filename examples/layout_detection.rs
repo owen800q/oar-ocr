@@ -13,59 +13,36 @@
 //! # Arguments
 //!
 //! * `-m, --model-path` - Path to the layout detection model file
-//! * `-o, --output-dir` - Directory to save visualization results (optional)
-//! * `--model-name` - Model name to explicitly specify the model type. Supported names:
-//!   - `pp_docblocklayout` - PP-DocBlockLayout model
-//!   - `pp_doclayout_s` - PP-DocLayout Small variant
-//!   - `pp_doclayout_m` - PP-DocLayout Medium variant
-//!   - `pp_doclayout_l` - PP-DocLayout Large variant
-//!   - `pp_doclayout_plus_l` - PP-DocLayout Plus Large variant
-//!   - `picodet_layout_1x` - PicoDet Layout 1x model
-//!   - `picodet_layout_1x_table` - PicoDet Layout 1x Table model
-//!   - `picodet_s_layout_3cls` - PicoDet Small Layout 3-class model
-//!   - `picodet_l_layout_3cls` - PicoDet Large Layout 3-class model
-//!   - `picodet_s_layout_17cls` - PicoDet Small Layout 17-class model
-//!   - `picodet_l_layout_17cls` - PicoDet Large Layout 17-class model
-//!   - `rtdetr_h_layout_3cls` - RT-DETR High Layout 3-class model
-//!   - `rtdetr_h_layout_17cls` - RT-DETR High Layout 17-class model
+//! * `-o, --output-dir` - Directory to save output results
+//! * `--vis` - Enable visualization output
+//! * `--model-name` - Model name to explicitly specify the model type
 //! * `--score-threshold` - Score threshold for layout elements (default: 0.5)
-//! * `--max-elements` - Maximum number of layout elements to detect (default: 100)
 //! * `--device` - Device to use for inference (e.g., 'cpu', 'cuda', 'cuda:0')
 //! * `<IMAGES>...` - Paths to input document images to process
 //!
-//! # Examples
+//! # Example
 //!
-//! Basic usage with auto-detection:
 //! ```bash
 //! cargo run --example layout_detection -- \
-//!     -m models/pp-doclayout_plus-l.onnx \
-//!     document1.jpg document2.jpg
-//! ```
-//!
-//! With explicit model name:
-//! ```bash
-//! cargo run --example layout_detection -- \
-//!     -m models/pp-doclayout_plus-l.onnx \
-//!     --model-name pp_doclayout_plus_l \
-//!     -o output/ \
+//!     -m pp-doclayout_plus-l.onnx \
+//!     -o output/ --vis \
 //!     document1.jpg document2.jpg
 //! ```
 
 mod utils;
 
 use clap::Parser;
+use oar_ocr::domain::tasks::layout_detection::LayoutDetectionConfig;
 use oar_ocr::predictors::LayoutDetectionPredictor;
 use oar_ocr::utils::load_image;
+use serde_json::json;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{error, info, warn};
-use utils::parse_device_config;
+use utils::device_config::parse_device_config;
+use utils::visualization::{LayoutItem, save_image, visualize_layout};
 
-#[cfg(feature = "visualization")]
 use std::fs;
-
-#[cfg(feature = "visualization")]
-use image::RgbImage;
 
 /// Command-line arguments for the layout detection example
 #[derive(Parser)]
@@ -80,9 +57,13 @@ struct Args {
     #[arg(required = true)]
     images: Vec<PathBuf>,
 
-    /// Directory to save visualization results (if visualization feature is enabled)
+    /// Directory to save output results
     #[arg(short, long)]
     output_dir: Option<PathBuf>,
+
+    /// Enable visualization output
+    #[arg(long)]
+    vis: bool,
 
     /// Model name to explicitly specify the model type (auto-detected from filename if not specified).
     /// Supported: pp_docblocklayout, pp_doclayout_s, pp_doclayout_m, pp_doclayout_l, pp_doclayout_plus_l,
@@ -91,13 +72,17 @@ struct Args {
     #[arg(long)]
     model_name: Option<String>,
 
-    /// Score threshold for layout elements (0.0 to 1.0)
-    #[arg(long, default_value_t = 0.5)]
-    score_threshold: f32,
+    /// Score threshold for layout elements (overrides model defaults)
+    #[arg(long)]
+    score_threshold: Option<f32>,
 
     /// Maximum number of layout elements to detect
     #[arg(long, default_value_t = 100)]
     max_elements: usize,
+
+    /// Dump layout elements as JSON to stdout
+    #[arg(long)]
+    dump_json: bool,
 
     /// Device to use for inference (e.g., 'cpu', 'cuda', 'cuda:0')
     #[arg(long, default_value = "cpu")]
@@ -114,7 +99,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Loading layout detection model: {:?}", args.model_path);
 
     // Auto-detect model type from filename if not specified
-    // Priority: --model-name > auto-detect from filename
     let model_type = if let Some(ref mn) = args.model_name {
         mn.clone()
     } else {
@@ -186,9 +170,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Build the layout detection predictor
+    let mut base_config = match model_type.as_str() {
+        "pp_doclayoutv2" => LayoutDetectionConfig::with_pp_doclayoutv2_defaults(),
+        "pp_doclayoutv3" => LayoutDetectionConfig::with_pp_doclayoutv3_defaults(),
+        _ => LayoutDetectionConfig::default(),
+    };
+    base_config.max_elements = args.max_elements;
+    if let Some(threshold) = args.score_threshold {
+        base_config.score_threshold = threshold;
+    }
+
     let mut predictor_builder = LayoutDetectionPredictor::builder()
-        .model_name(model_type)
-        .score_threshold(args.score_threshold);
+        .with_config(base_config)
+        .model_name(model_type);
 
     if let Some(ort_cfg) = ort_config {
         predictor_builder = predictor_builder.with_ort_config(ort_cfg);
@@ -197,7 +191,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let predictor = predictor_builder.build(&args.model_path)?;
 
     // Create output directory if needed
-    #[cfg(feature = "visualization")]
     if let Some(ref output_dir) = args.output_dir {
         fs::create_dir_all(output_dir)?;
     }
@@ -223,7 +216,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (width, height) = (img.width(), img.height());
         info!("Image size: {}x{}", width, height);
 
-        #[cfg(feature = "visualization")]
         let img_for_vis = img.clone();
 
         // Run layout detection
@@ -291,9 +283,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            if args.dump_json {
+                let elements_json: Vec<_> = elements
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, element)| {
+                        let bbox = &element.bbox;
+                        json!({
+                            "order": idx + 1,
+                            "label": element.element_type.as_str(),
+                            "score": element.score,
+                            "bbox": [
+                                bbox.x_min().round() as i32,
+                                bbox.y_min().round() as i32,
+                                bbox.x_max().round() as i32,
+                                bbox.y_max().round() as i32
+                            ]
+                        })
+                    })
+                    .collect();
+                let payload = json!({
+                    "image": image_path,
+                    "width": width,
+                    "height": height,
+                    "elements": elements_json
+                });
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            }
+
             // Visualization
-            #[cfg(feature = "visualization")]
-            if let Some(ref output_dir) = args.output_dir {
+            if args.vis {
+                let output_dir = args
+                    .output_dir
+                    .as_ref()
+                    .ok_or("--output-dir is required when --vis is enabled")?;
+
                 // Use the original filename for output
                 let output_filename = image_path
                     .file_name()
@@ -301,11 +325,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or("result.png");
                 let output_path = output_dir.join(output_filename);
 
-                if let Err(e) = visualize_layout(&img_for_vis, elements, &output_path) {
-                    error!("Failed to save visualization: {}", e);
-                } else {
-                    info!("Visualization saved to: {:?}", output_path);
-                }
+                // Build layout items for visualization
+                let layout_items: Vec<LayoutItem> = elements
+                    .iter()
+                    .map(|e| LayoutItem {
+                        bbox: &e.bbox,
+                        element_type: &e.element_type,
+                        score: e.score,
+                    })
+                    .collect();
+
+                let vis_img = visualize_layout(&img_for_vis, &layout_items, 2, true);
+                save_image(&vis_img, &output_path)
+                    .map_err(|e| format!("Failed to save visualization: {}", e))?;
+                info!("Visualization saved to: {:?}", output_path);
             }
         } else {
             warn!("No layout elements detected in {:?}", image_path);
@@ -327,98 +360,4 @@ fn format_element_type(element_type: &str) -> String {
             Some(first) => first.to_uppercase().chain(chars).collect(),
         }
     }
-}
-
-/// Visualize layout detection results
-#[cfg(feature = "visualization")]
-fn visualize_layout(
-    img: &RgbImage,
-    elements: &[oar_ocr::domain::tasks::LayoutElement],
-    output_path: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use imageproc::drawing::draw_hollow_rect_mut;
-    use imageproc::rect::Rect;
-
-    // Convert to DynamicImage for drawing
-    let mut img = image::DynamicImage::ImageRgb8(img.clone()).to_rgba8();
-
-    // Define colors for different element types
-    let colors = [
-        image::Rgba([255, 0, 0, 255]),   // Red for Text
-        image::Rgba([0, 255, 0, 255]),   // Green for Title
-        image::Rgba([0, 0, 255, 255]),   // Blue for List
-        image::Rgba([255, 255, 0, 255]), // Yellow for Table
-        image::Rgba([255, 0, 255, 255]), // Magenta for Figure
-    ];
-
-    // Draw bounding boxes
-    for element in elements {
-        // Determine color based on element type string
-        let color = match element.element_type.to_lowercase().as_str() {
-            "text" => colors[0],
-            "title" | "paragraph_title" | "doc_title" => colors[1],
-            "list" => colors[2],
-            "table" => colors[3],
-            _ => colors[4], // Default to magenta for figure, image, and others
-        };
-
-        // Get bounding rectangle
-        let bbox = &element.bbox;
-        if !bbox.points.is_empty() {
-            let min_x = bbox
-                .points
-                .iter()
-                .map(|p| p.x as i32)
-                .min()
-                .unwrap_or(0)
-                .max(0);
-            let min_y = bbox
-                .points
-                .iter()
-                .map(|p| p.y as i32)
-                .min()
-                .unwrap_or(0)
-                .max(0);
-            let max_x = bbox
-                .points
-                .iter()
-                .map(|p| p.x as i32)
-                .max()
-                .unwrap_or(0)
-                .min(img.width() as i32);
-            let max_y = bbox
-                .points
-                .iter()
-                .map(|p| p.y as i32)
-                .max()
-                .unwrap_or(0)
-                .min(img.height() as i32);
-
-            if max_x > min_x && max_y > min_y {
-                let rect =
-                    Rect::at(min_x, min_y).of_size((max_x - min_x) as u32, (max_y - min_y) as u32);
-                draw_hollow_rect_mut(&mut img, rect, color);
-            }
-        }
-    }
-
-    // Save visualization
-    // Convert RGBA to RGB if saving as JPEG (JPEG doesn't support alpha channel)
-    let extension = output_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    if extension == "jpg" || extension == "jpeg" {
-        let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
-        rgb_img
-            .save(output_path)
-            .map_err(|e| format!("Failed to save visualization to {:?}: {}", output_path, e))?;
-    } else {
-        img.save(output_path)
-            .map_err(|e| format!("Failed to save visualization to {:?}: {}", output_path, e))?;
-    }
-
-    Ok(())
 }

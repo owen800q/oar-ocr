@@ -13,17 +13,14 @@
 //! # Arguments
 //!
 //! * `-m, --model-path` - Path to the table structure recognition model file
-//! * `--dict-path` - Path to table structure dictionary file (required)
+//! * `--dict-path` - Path to table structure dictionary file (required). Common dictionaries:
 //!   - `table_structure_dict_ch.txt` - Chinese dictionary (48 entries)
 //!   - `table_structure_dict.txt` - English dictionary (28 entries)
 //!   - `table_master_structure_dict.txt` - Master dictionary with extended tags
+//! * `--model-name` - Table structure model preset (`SLANeXt_wired`, `SLANeXt_wireless`, `SLANet`, `SLANet_plus`)
 //! * `<IMAGES>...` - Paths to input table images to process
 //!
-//! # Output
-//!
-//! that match standard output format for easy comparison and verification.
-//!
-//! # Usage
+//! # Examples
 //!
 //! Simple run with default settings:
 //!
@@ -31,7 +28,7 @@
 //! cargo run --example table_structure_recognition -- \
 //!     --model-path path/to/model.onnx \
 //!     --dict-path path/to/dict.txt \
-//!     --image-path path/to/image.jpg
+//!     path/to/image.jpg
 //! ```
 //!
 //! With custom dictionary:
@@ -39,8 +36,8 @@
 //! ```bash
 //! cargo run --example table_structure_recognition -- \
 //!     --model-path path/to/model.onnx \
-//!     --dict-path /path/to/table_structure_dict_ch.txt \
-//!     --image-path path/to/image.jpg
+//!     --dict-path path/to/table_structure_dict_ch.txt \
+//!     path/to/image.jpg
 //! ```
 //!
 //! With wireless table model (requires different dictionary):
@@ -48,9 +45,9 @@
 //! ```bash
 //! cargo run --example table_structure_recognition -- \
 //!     --model-path path/to/model.onnx \
-//!     --dict-path /path/to/table_structure_dict.txt \
-//!     --table-type wireless \
-//!     --image-path path/to/image.jpg
+//!     --dict-path path/to/table_structure_dict.txt \
+//!     --model-name SLANet_plus \
+//!     path/to/image.jpg
 //! ```
 
 mod utils;
@@ -61,7 +58,7 @@ use oar_ocr::utils::load_image;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{error, info};
-use utils::parse_device_config;
+use utils::device_config::parse_device_config;
 
 /// Command-line arguments for the table structure recognition example
 #[derive(Parser)]
@@ -80,6 +77,10 @@ struct Args {
     #[arg(long)]
     dict_path: PathBuf,
 
+    /// Table structure model preset (`SLANeXt_wired`, `SLANeXt_wireless`, `SLANet`, `SLANet_plus`)
+    #[arg(long)]
+    model_name: Option<String>,
+
     /// Device to use for inference (e.g., 'cpu', 'cuda', 'cuda:0')
     #[arg(long, default_value = "cpu")]
     device: String,
@@ -92,16 +93,15 @@ struct Args {
     #[arg(long, default_value = "500")]
     max_length: usize,
 
-    /// Model input height (default: 512 for wired tables)
-    #[arg(long, default_value = "512")]
-    input_height: u32,
+    /// Optional model input height override (defaults depend on model preset)
+    #[arg(long)]
+    input_height: Option<u32>,
 
-    /// Model input width (default: 512 for wired tables)
-    #[arg(long, default_value = "512")]
-    input_width: u32,
+    /// Optional model input width override (defaults depend on model preset)
+    #[arg(long)]
+    input_width: Option<u32>,
 
-    /// Directory to save visualization results (requires `visualization` feature)
-    #[cfg(feature = "visualization")]
+    /// Directory to save visualization results
     #[arg(short = 'o', long = "output-dir")]
     output_dir: Option<PathBuf>,
 }
@@ -157,10 +157,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Recognition Configuration:");
     info!("  Score threshold: {}", args.score_thresh);
     info!("  Max structure length: {}", args.max_length);
-    info!(
-        "  Input shape: ({}, {})",
-        args.input_height, args.input_width
-    );
+    if let Some(ref model_name) = args.model_name {
+        info!("  Model preset: {}", model_name);
+    } else {
+        info!("  Model preset: <auto-detect from path>");
+    }
+    match (args.input_height, args.input_width) {
+        (Some(height), Some(width)) => info!("  Input shape override: ({}, {})", height, width),
+        (None, None) => info!("  Input shape override: <adapter default>"),
+        _ => {
+            return Err("Both --input-height and --input-width must be provided together".into());
+        }
+    }
     info!("  Dictionary: {}", args.dict_path.display());
 
     // Build the predictor
@@ -168,12 +176,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  Model: {}", args.model_path.display());
 
     let start_build = Instant::now();
-    let predictor = TableStructureRecognitionPredictor::builder()
+    let mut predictor_builder = TableStructureRecognitionPredictor::builder()
         .score_threshold(args.score_thresh)
         .dict_path(&args.dict_path)
-        .input_shape(args.input_height, args.input_width)
-        .with_ort_config(ort_config)
-        .build(&args.model_path)?;
+        .with_ort_config(ort_config);
+
+    if let Some(ref model_name) = args.model_name {
+        predictor_builder = predictor_builder.model_name(model_name);
+    }
+
+    if let (Some(height), Some(width)) = (args.input_height, args.input_width) {
+        predictor_builder = predictor_builder.input_shape(height, width);
+    }
+
+    let predictor = predictor_builder.build(&args.model_path)?;
 
     info!(
         "Predictor built in {:.2}ms",
@@ -238,29 +254,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("  Cell bboxes ({}): {:?}", bboxes.len(), bboxes);
     }
 
-    #[cfg(feature = "visualization")]
-    {
-        if let Some(ref output_dir) = args.output_dir {
-            std::fs::create_dir_all(output_dir)?;
+    if let Some(ref output_dir) = args.output_dir {
+        std::fs::create_dir_all(output_dir)?;
 
-            for (idx, structure) in output.structures.iter().enumerate() {
-                let structure_html = structure.join("");
-                let html_stem = existing_images
-                    .get(idx)
-                    .and_then(|path| path.file_stem())
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("table_structure");
-                let html_path = output_dir.join(format!("{}_{}_structure.html", html_stem, idx));
+        for (idx, structure) in output.structures.iter().enumerate() {
+            let structure_html = structure.join("");
+            let html_stem = existing_images
+                .get(idx)
+                .and_then(|path| path.file_stem())
+                .and_then(|name| name.to_str())
+                .unwrap_or("table_structure");
+            let html_path = output_dir.join(format!("{}_{}_structure.html", html_stem, idx));
 
-                if let Err(e) = std::fs::write(&html_path, structure_html) {
-                    error!(
-                        "Failed to write structure HTML {}: {}",
-                        html_path.display(),
-                        e
-                    );
-                } else {
-                    info!("Structure HTML saved to: {}", html_path.display());
-                }
+            if let Err(e) = std::fs::write(&html_path, structure_html) {
+                error!(
+                    "Failed to write structure HTML {}: {}",
+                    html_path.display(),
+                    e
+                );
+            } else {
+                info!("Structure HTML saved to: {}", html_path.display());
             }
         }
     }
