@@ -261,6 +261,163 @@ let ort_config = OrtSessionConfig::new()
     ]);
 ```
 
+## HTTP API Server
+
+The `oar-ocr-server` binary wraps the OCR pipeline in a small HTTP API (and a one-shot CLI). It is built behind the `cli` feature; prebuilt binaries for Linux (x64, ARM64), macOS (Apple Silicon), and Windows (x64) are attached to each GitHub release together with the PDFium library.
+
+### Building
+
+```bash
+cargo build --release --features cli --bin oar-ocr-server
+# binary: target/release/oar-ocr-server
+```
+
+Add an execution provider feature (for example `--features cli,cuda`) to enable GPU inference.
+
+### Example: PP-OCRv6 small
+
+Download the PP-OCRv6 small detection model, recognition model, and dictionary. The dictionary covers Simplified and Traditional Chinese, Japanese, and English:
+
+```bash
+mkdir -p models && cd models
+for f in pp-ocrv6_small_det.onnx pp-ocrv6_small_rec.onnx ppocrv6_dict.txt; do
+  curl -fLO "https://github.com/GreatV/oar-ocr/releases/download/v0.7.0/$f"
+done
+cd ..
+```
+
+Start the server:
+
+```bash
+oar-ocr-server serve \
+  --det-model models/pp-ocrv6_small_det.onnx \
+  --rec-model models/pp-ocrv6_small_rec.onnx \
+  --dict-path models/ppocrv6_dict.txt \
+  --host 0.0.0.0 --port 8080
+```
+
+Every option can also be set through an environment variable, which is convenient for containers and service managers:
+
+```bash
+export OAR_DET_MODEL=models/pp-ocrv6_small_det.onnx
+export OAR_REC_MODEL=models/pp-ocrv6_small_rec.onnx
+export OAR_DICT_PATH=models/ppocrv6_dict.txt
+export OAR_PORT=8080
+oar-ocr-server serve
+```
+
+| Option | Environment variable | Default | Description |
+|--------|----------------------|---------|-------------|
+| `--det-model` | `OAR_DET_MODEL` | required | Text detection model (`.onnx`) |
+| `--rec-model` | `OAR_REC_MODEL` | required | Text recognition model (`.onnx`) |
+| `--dict-path` | `OAR_DICT_PATH` | required | Character dictionary matching the recognition model |
+| `--host` | `OAR_HOST` | `0.0.0.0` | Address to bind to |
+| `--port`, `-p` | `OAR_PORT` | `8080` | Port to listen on |
+| `--device` | `OAR_DEVICE` | `cpu` | `cpu`, `cuda`, or `cuda:N` (requires the `cuda` feature) |
+| `--workers` | `OAR_WORKERS` | number of CPUs | Worker threads |
+
+Set `RUST_LOG` (for example `RUST_LOG=debug`) to change log verbosity; logs go to stderr.
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check; reports the version and whether PDF support is available |
+| `POST` | `/ocr` | Run OCR on an image or PDF given by URL |
+| `POST` | `/api/v1/ocr` | Same as `/ocr` (versioned path) |
+
+CORS is open to any origin, so the API can be called directly from a browser.
+
+#### Health check
+
+```bash
+curl http://localhost:8080/health
+```
+
+```json
+{"status":"ok","version":"0.9.3","pdf_support":true}
+```
+
+#### OCR request
+
+The request body is JSON with the `url` of the image or PDF to process. The server downloads the file, so the URL must be reachable from the server:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/ocr \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/receipt.jpg"}'
+```
+
+To OCR a local file, serve it over HTTP first (for example `python3 -m http.server 8000` in its directory) and pass `http://127.0.0.1:8000/<file>` as the URL.
+
+Response for an image (regions abbreviated):
+
+```json
+{
+  "success": true,
+  "text": "堂食送餐服務\nTable Service\n218\n...",
+  "regions": [
+    {
+      "text": "堂食送餐服務",
+      "confidence": 0.9998,
+      "bounding_box": { "x_min": 241.0, "y_min": 525.0, "x_max": 537.0, "y_max": 583.0 }
+    },
+    {
+      "text": "Table Service",
+      "confidence": 0.9993,
+      "bounding_box": { "x_min": 258.0, "y_min": 574.0, "x_max": 525.0, "y_max": 616.0 }
+    }
+  ],
+  "image_width": 720,
+  "image_height": 1280,
+  "processing_time_ms": 925.07
+}
+```
+
+- `text` joins all recognized regions with newlines.
+- `bounding_box` is the axis-aligned box of each region in pixel coordinates.
+- `confidence` is the recognition score in `[0, 1]`.
+
+#### PDF requests
+
+When the URL ends in `.pdf` or the downloaded bytes are a PDF, every page is rendered and recognized. The response contains per-page results (`page` is 1-based), and the top-level `text` joins the pages with a `--- Page Break ---` separator:
+
+```json
+{
+  "success": true,
+  "text": "...page 1...\n\n--- Page Break ---\n\n...page 2...",
+  "page_count": 2,
+  "pages": [
+    { "page": 1, "text": "...", "regions": [ ... ], "image_width": 1700, "image_height": 2200 }
+  ],
+  "processing_time_ms": 2310.4
+}
+```
+
+PDF support requires the PDFium shared library (`libpdfium.so`, `libpdfium.dylib`, or `pdfium.dll`). The server looks for it in the working directory, `/usr/lib`, `/usr/local/lib`, `/opt/homebrew/lib`, and then the system library path. Release archives ship it next to the binary. If it is missing, `/health` reports `"pdf_support": false` and PDF requests fail, while image requests still work.
+
+#### Errors
+
+Failed requests return `"success": false` with an `error` message. Download and decode failures return HTTP 400; OCR failures return HTTP 500:
+
+```json
+{"success":false,"text":"","regions":[],"image_width":0,"image_height":0,"error":"Failed to download: ..."}
+```
+
+### One-shot CLI mode
+
+The same binary can process a single image without starting a server:
+
+```bash
+oar-ocr-server ocr --file table-card.jpg \
+  --det-model models/pp-ocrv6_small_det.onnx \
+  --rec-model models/pp-ocrv6_small_rec.onnx \
+  --dict-path models/ppocrv6_dict.txt \
+  --output json   # or: text, pretty (default)
+```
+
+Use `--url <URL>` instead of `--file` to read the image from a URL.
+
 ## PaddleOCR-VL
 
 [PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL) is a 0.9B document Vision-Language Model from the PaddlePaddle team. It supports 109 languages and task-specific recognition for text, tables, formulas, and charts.
