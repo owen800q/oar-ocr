@@ -136,3 +136,11 @@ jobs:
           Copy-Item "target\${{ matrix.target }}\release\oar-ocr-server.exe" dist/
           Copy-Item "pdfium\bin\${{ matrix.lib_name }}" dist/
           Get-ChildItem dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oar-ocr-server-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
