@@ -31,12 +31,6 @@ jobs:
             pdfium_name: pdfium-linux-arm64
             lib_name: libpdfium.so
 
-          # macOS Intel
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            pdfium_name: pdfium-mac-x64
-            lib_name: libpdfium.dylib
-
           # macOS Apple Silicon
           - target: aarch64-apple-darwin
             os: macos-14
