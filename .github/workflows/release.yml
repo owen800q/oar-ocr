@@ -151,7 +151,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target\${{ matrix.target }}\release\${{ env.BINARY_NAME }}.exe" -Destination "dist\"
+          # ONNX Runtime on Windows is built with DirectML; ort copies the
+          # DirectML.dll it links against next to the exe. Ship it too, or the
+          # exe exits silently on machines with an older system DirectML.
+          Get-ChildItem "target\${{ matrix.target }}\release\*.dll" | Copy-Item -Destination "dist\"
           Copy-Item "pdfium\bin\${{ matrix.lib_name }}" -Destination "dist\"
+          Push-Location dist
+          .\${{ env.BINARY_NAME }}.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "${{ env.BINARY_NAME }}.exe exited with $LASTEXITCODE" }
+          Pop-Location
           # Create README for the bundle
           @"
           OAR-OCR Server Bundle
@@ -160,6 +168,7 @@ jobs:
           This bundle includes:
           - oar-ocr-server.exe: The OCR binary
           - pdfium.dll: Required for PDF processing
+          - DirectML.dll: Required by ONNX Runtime
 
           Usage:
             # Run the binary from this directory so it can find the PDFium library
