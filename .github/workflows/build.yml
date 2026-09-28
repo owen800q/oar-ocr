@@ -134,8 +134,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist
           Copy-Item "target\${{ matrix.target }}\release\oar-ocr-server.exe" dist/
+          # ONNX Runtime on Windows is built with DirectML; ort copies the
+          # DirectML.dll it links against next to the exe. Ship it too, or the
+          # exe exits silently on machines with an older system DirectML.
+          Get-ChildItem "target\${{ matrix.target }}\release\*.dll" | Copy-Item -Destination dist/
           Copy-Item "pdfium\bin\${{ matrix.lib_name }}" dist/
           Get-ChildItem dist/
+
+      - name: Smoke test packaged binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: dist
+        run: |
+          .\oar-ocr-server.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "oar-ocr-server.exe exited with $LASTEXITCODE" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
