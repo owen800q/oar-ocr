@@ -5,13 +5,16 @@ const MODEL_MODULES: &[&str] = &[
     "glmocr",
     "hpd_parsing",
     "hunyuanocr",
+    "jina_ocr",
     "mineru",
     "mineru_diffusion",
     "monkeyocrv2",
-    "navidc_ocr",
     "ovisocr2",
     "paddleocr_vl",
     "pp_doclayout",
+    "teleocr",
+    "wevisdoc",
+    "xiaomi_ocr",
 ];
 
 fn collect_rust_sources(dir: &Path, sources: &mut Vec<std::path::PathBuf>) {

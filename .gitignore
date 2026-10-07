@@ -1,5 +1,7 @@
 /.oar/
 /output/
+/benchmark-results/
+/benchmark-inputs/
 /models/
 
 # Local test files - downloaded at runtime

@@ -1,6 +1,6 @@
 //! Unified Document Parser Example
 //!
-//! This example demonstrates the unified DocParser API for external
+//! This example demonstrates the PageParser API for external
 //! layout-first document parsing (layout detection + region recognition).
 //!
 //! HunyuanOCR and the MinerU models are intentionally not exposed here: their
@@ -38,10 +38,10 @@
 //!     --layout-dir PaddlePaddle/PP-DocLayoutV3_safetensors \
 //!     document.jpg
 //!
-//! # Using NaviDC-OCR model
+//! # Using TeleOCR model
 //! cargo run -p oar-ocr-vl --example doc_parser -- \
-//!     --model-name navidc \
-//!     --model-dir StarDoc-AI/NaviDC-OCR \
+//!     --model-name teleocr \
+//!     --model-dir XingChen-AGI/TeleOCR \
 //!     --layout-dir PaddlePaddle/PP-DocLayoutV3_safetensors \
 //!     document.jpg
 //!
@@ -70,7 +70,7 @@ use tracing::{error, info};
 
 use oar_ocr_vl::utils::image::load_image;
 use oar_ocr_vl::utils::parse_device;
-use oar_ocr_vl::{DocParser, DocParserConfig, PpDocLayout};
+use oar_ocr_vl::{DocParserConfig, LayoutPageParser, PageParser, PpDocLayout};
 
 /// Recognition model type
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -87,9 +87,9 @@ enum ModelName {
     /// GLM-OCR: OCR expert VLM (GLM-V)
     #[value(name = "glmocr")]
     GlmOcr,
-    /// NaviDC-OCR: document parsing VLM (Qwen2.5-VL backbone)
-    #[value(name = "navidc")]
-    NaviDc,
+    /// TeleOCR: document parsing VLM (Qwen2.5-VL backbone)
+    #[value(name = "teleocr")]
+    TeleOcr,
     /// jina-ocr-v1: end-to-end page-to-Markdown parser (SAM+CLIP over a
     /// DeepSeek-V2 MoE decoder)
     #[value(name = "jina-ocr")]
@@ -103,7 +103,7 @@ enum ModelName {
 #[derive(Parser)]
 #[command(name = "doc_parser")]
 #[command(
-    about = "Unified external-layout DocParser - supports PaddleOCR-VL, PaddleOCR-VL-1.5/1.6, GLM-OCR, NaviDC-OCR, jina-ocr-v1, and WeVisDoc"
+    about = "Unified external-layout DocParser - supports PaddleOCR-VL, PaddleOCR-VL-1.5/1.6, GLM-OCR, TeleOCR, jina-ocr-v1, and WeVisDoc"
 )]
 struct Args {
     /// Recognition model to use
@@ -122,8 +122,8 @@ struct Args {
     #[arg(required = true)]
     images: Vec<PathBuf>,
 
-    /// Device to run on: cpu, cuda, cuda:N, or metal
-    #[arg(short, long, default_value = "cpu")]
+    /// Device to run on: auto, cpu, cuda, cuda:N, or metal
+    #[arg(short, long, default_value = "auto")]
     device: String,
 
     /// Directory to save markdown output
@@ -146,7 +146,7 @@ struct Args {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use oar_ocr_vl::{GlmOcr, JinaOcr, NaviDcOcr, PaddleOcrVl, WeVisDoc};
+    use oar_ocr_vl::{GlmOcr, JinaOcr, PaddleOcrVl, TeleOcr, WeVisDoc};
 
     utils::init_tracing();
     let args = Args::parse();
@@ -205,9 +205,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 load_start.elapsed().as_secs_f64() * 1000.0
             );
 
-            let parser =
-                DocParser::with_config(&vl, config).with_region_batch_size(args.region_batch_size);
-            process_images(&parser, &layout, &existing_images, &args)?;
+            let parser = LayoutPageParser::with_config(layout, vl, config)
+                .with_region_batch_size(args.region_batch_size);
+            process_images(&parser, &existing_images, &args)?;
         }
         ModelName::GlmOcr => {
             info!("Loading GLM-OCR model...");
@@ -218,22 +218,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 load_start.elapsed().as_secs_f64() * 1000.0
             );
 
-            let parser = DocParser::with_config(&model, config)
+            let parser = LayoutPageParser::with_config(layout, model, config)
                 .with_region_batch_size(args.region_batch_size);
-            process_images(&parser, &layout, &existing_images, &args)?;
+            process_images(&parser, &existing_images, &args)?;
         }
-        ModelName::NaviDc => {
-            info!("Loading NaviDC-OCR model...");
+        ModelName::TeleOcr => {
+            info!("Loading TeleOCR model...");
             let load_start = Instant::now();
-            let model = NaviDcOcr::from_dir(&args.model_dir, device)?;
+            let model = TeleOcr::from_dir(&args.model_dir, device)?;
             info!(
-                "NaviDC-OCR loaded in {:.2}ms",
+                "TeleOCR loaded in {:.2}ms",
                 load_start.elapsed().as_secs_f64() * 1000.0
             );
 
-            let parser = DocParser::with_config(&model, config)
+            let parser = LayoutPageParser::with_config(layout, model, config)
                 .with_region_batch_size(args.region_batch_size);
-            process_images(&parser, &layout, &existing_images, &args)?;
+            process_images(&parser, &existing_images, &args)?;
         }
         ModelName::JinaOcr => {
             info!("Loading jina-ocr-v1 model...");
@@ -244,9 +244,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 load_start.elapsed().as_secs_f64() * 1000.0
             );
 
-            let parser = DocParser::with_config(&model, config)
+            let parser = LayoutPageParser::with_config(layout, model, config)
                 .with_region_batch_size(args.region_batch_size);
-            process_images(&parser, &layout, &existing_images, &args)?;
+            process_images(&parser, &existing_images, &args)?;
         }
         ModelName::WeVisDoc => {
             info!("Loading WeVisDoc model...");
@@ -257,22 +257,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 load_start.elapsed().as_secs_f64() * 1000.0
             );
 
-            let parser = DocParser::with_config(&model, config)
+            let parser = LayoutPageParser::with_config(layout, model, config)
                 .with_region_batch_size(args.region_batch_size);
-            process_images(&parser, &layout, &existing_images, &args)?;
+            process_images(&parser, &existing_images, &args)?;
         }
     }
     Ok(())
 }
 
 fn process_images<B: oar_ocr_vl::RecognitionBackend>(
-    parser: &DocParser<B>,
-    layout: &PpDocLayout,
+    parser: &LayoutPageParser<PpDocLayout, B>,
     images: &[PathBuf],
     args: &Args,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("\n=== Processing {} images ===", images.len());
-    let ignore_labels = &parser.config().markdown_ignore_labels;
 
     for image_path in images {
         info!("\nProcessing: {}", image_path.display());
@@ -291,15 +289,13 @@ fn process_images<B: oar_ocr_vl::RecognitionBackend>(
         };
 
         let start = Instant::now();
-        let result = parser.parse(layout, rgb_img);
+        let result = parser.parse_page(&rgb_img, &Default::default());
         match result {
             Ok(result) => {
                 info!("  Parsed in {:.2}s", start.elapsed().as_secs_f64());
-                info!("  Elements: {}", result.layout_elements.len());
+                info!("  Elements: {}", result.blocks.len());
 
-                // Get markdown from the parsed result.
-                let markdown =
-                    oar_ocr_vl::utils::to_markdown(&result.layout_elements, ignore_labels, true);
+                let markdown = result.markdown.unwrap_or_default();
 
                 // Save or print
                 if let Some(ref dir) = args.output_dir {
@@ -315,9 +311,9 @@ fn process_images<B: oar_ocr_vl::RecognitionBackend>(
                 }
 
                 if args.verbose {
-                    for (i, el) in result.layout_elements.iter().enumerate() {
+                    for (i, el) in result.blocks.iter().enumerate() {
                         let preview = el
-                            .text
+                            .content
                             .as_ref()
                             .map(|t| {
                                 if t.chars().count() > 40 {
@@ -327,7 +323,7 @@ fn process_images<B: oar_ocr_vl::RecognitionBackend>(
                                 }
                             })
                             .unwrap_or_default();
-                        info!("  [{}] {:?}: {}", i, el.element_type, preview);
+                        info!("  [{}] {:?}: {}", i, el.block_type, preview);
                     }
                 }
             }

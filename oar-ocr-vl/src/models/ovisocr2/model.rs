@@ -2,9 +2,9 @@ use super::config::{OvisOcr2Config, OvisOcr2ImageProcessorConfig};
 use super::processing::{
     OvisOcr2ImageInputs, preprocess_image, validate_processor_vision_compatibility,
 };
-use super::text::OvisOcr2TextModel;
 use super::vision::OvisOcr2VisionModel;
 use crate::api::recognition::RecognitionTask;
+use crate::backbones::qwen3_5::text::Qwen35TextModel;
 use crate::error::Error;
 #[cfg(feature = "cuda")]
 use crate::runtime::cuda::{ArgmaxFirstBf16, ArgmaxFirstF32};
@@ -30,7 +30,7 @@ pub struct OvisOcr2 {
     cfg: OvisOcr2Config,
     image_cfg: OvisOcr2ImageProcessorConfig,
     tokenizer: Tokenizer,
-    text: OvisOcr2TextModel,
+    text: Qwen35TextModel,
     vision: OvisOcr2VisionModel,
     lm_head: Linear,
     stop_token_ids: Vec<u32>,
@@ -43,7 +43,7 @@ pub struct OvisOcr2 {
     _drain_guard: crate::runtime::decoder_graph::CudaGraphDrainGuard,
 }
 
-struct TextCacheGuard<'a>(&'a OvisOcr2TextModel);
+struct TextCacheGuard<'a>(&'a Qwen35TextModel);
 
 impl Drop for TextCacheGuard<'_> {
     fn drop(&mut self) {
@@ -87,7 +87,12 @@ impl OvisOcr2 {
             VarBuilder::from_mmaped_safetensors(&weight_files, dtype, &device)
                 .map_err(|e| candle_to_ocr_inference(MODEL_NAME, "load safetensors", e))?
         };
-        let text = OvisOcr2TextModel::load(&cfg.text_config, vb.pp("model").pp("language_model"))?;
+        let text = Qwen35TextModel::load(
+            &cfg.text_config,
+            MODEL_NAME,
+            "OAR_OVISOCR2_DISABLE_CUDA_GRAPH",
+            vb.pp("model").pp("language_model"),
+        )?;
         let vision = OvisOcr2VisionModel::load(&cfg.vision_config, vb.pp("model").pp("visual"))?;
         // OvisOCR2 ties the language-model output projection to token embeddings.
         let lm_head = Linear::new(text.token_embedding_weight(), None);
@@ -588,40 +593,10 @@ pub(super) fn postprocess_recognition_text(text: String, task: RecognitionTask) 
     postprocess_text(text, task == RecognitionTask::Chart)
 }
 
-/// Clean a truncated repetitive tail using the official OvisOCR2 heuristic.
-pub fn clean_truncated_repeats(text: &str) -> String {
-    const MIN_TEXT_LEN: usize = 8_000;
-    const MAX_PERIOD: usize = 200;
-    const MIN_REPEAT_CHARS: usize = 100;
-    const MIN_REPEAT_TIMES: usize = 5;
-
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    if n < MIN_TEXT_LEN {
-        return text.to_string();
-    }
-    for unit_len in 1..=MAX_PERIOD.min(n - 1) {
-        if chars[n - 1] != chars[n - 1 - unit_len] {
-            continue;
-        }
-        let mut match_len = 1usize;
-        let mut index = n - 2;
-        while index >= unit_len && chars[index] == chars[index - unit_len] {
-            match_len += 1;
-            index -= 1;
-        }
-        let total_len = match_len + unit_len;
-        let repeat_times = total_len / unit_len;
-        let tail_len = total_len % unit_len;
-        if repeat_times >= MIN_REPEAT_TIMES && total_len >= MIN_REPEAT_CHARS {
-            let prefix_end = n - total_len + unit_len;
-            let mut output: String = chars[..prefix_end].iter().collect();
-            output.extend(chars[n - tail_len..].iter());
-            return output;
-        }
-    }
-    text.to_string()
-}
+// The truncated-tail cleaner is shared with Xiaomi-OCR-0 (both models'
+// official post-processing carries the same heuristic); it lives in the
+// render layer and is re-exported here to preserve the public path.
+pub use crate::render::text::clean_truncated_repeats;
 
 #[cfg(test)]
 mod tests {
@@ -710,20 +685,5 @@ mod tests {
         let outputs = tasks.map(|task| postprocess_recognition_text(text.to_string(), task));
 
         assert_eq!(outputs, ["", text, "", ""]);
-    }
-
-    #[test]
-    fn short_text_is_not_repeat_cleaned() {
-        let text = "abc".repeat(100);
-        assert_eq!(clean_truncated_repeats(&text), text);
-    }
-
-    #[test]
-    fn long_repetitive_tail_is_cleaned() {
-        let prefix = "x".repeat(8_000);
-        let text = format!("{prefix}{}", "abcdef".repeat(30));
-        let cleaned = clean_truncated_repeats(&text);
-        assert!(cleaned.len() < text.len());
-        assert!(cleaned.starts_with(&prefix));
     }
 }

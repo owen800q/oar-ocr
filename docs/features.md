@@ -57,7 +57,7 @@ cargo add oar-ocr --no-default-features --features download-binaries
 
 ## Execution Provider Features
 
-The execution provider features make their corresponding ONNX Runtime providers available to the crate. Enabling a feature does not select that provider automatically. Configure the provider explicitly and place the CPU provider last when a fallback is desired.
+The execution provider features make their corresponding ONNX Runtime providers available to the crate. Library session defaults remain CPU. Use automatic selection or configure providers explicitly, placing CPU last when a fallback is desired.
 
 ```rust
 use oar_ocr::core::config::{OrtExecutionProvider, OrtSessionConfig};
@@ -76,6 +76,8 @@ let ort_config = OrtSessionConfig::new().with_execution_providers(vec![
 
 Pass the configuration to `OAROCRBuilder::ort_session` or `OARStructureBuilder::ort_session`. Requesting a provider without its matching Cargo feature returns a configuration error.
 
+Examples default to `--device auto`; library callers opt in with `OrtSessionConfig::auto()` or `oar_ocr_vl::auto_device()`. See [Automatic Device Selection](usage.md#automatic-device-selection) for provider priorities, fallback behavior, and dtype selection.
+
 ### `cuda`
 
 Enables the NVIDIA CUDA execution provider. It is intended for supported Linux and Windows targets and requires a compatible NVIDIA driver, CUDA runtime, and cuDNN installation.
@@ -85,6 +87,8 @@ cargo add oar-ocr --features cuda
 ```
 
 The CUDA provider supports device selection, a GPU memory limit, arena growth strategy, cuDNN convolution algorithm selection, and maximum-workspace control through `OrtExecutionProvider::CUDA`.
+
+Every ONNX Runtime session keeps its own CUDA memory arena, and arenas do not return memory to the device on their own. `OrtSessionConfig::with_arena_shrinkage(true)` releases idle arena memory after each run, at a small per-run cost. `OARStructureBuilder` enables it by default on CUDA because its many resident models would otherwise reach about 19 GB on a multi-page PDF (about 9 GB with shrinkage). Pass `with_arena_shrinkage(false)` to opt out.
 
 ### `tensorrt`
 
@@ -116,20 +120,9 @@ cargo add oar-ocr --features coreml
 
 This feature controls the ONNX Runtime Core ML provider used by the classic pipeline. The `metal` feature in `oar-ocr-vl` is separate.
 
-`OrtExecutionProvider::CoreML` retains its original `ane_only` and `subgraphs`
-fields. `OrtSessionConfig::with_coreml_config` adds compute-unit selection,
-MLProgram versus legacy NeuralNetwork format, static-input filtering,
-specialization strategy, low-precision GPU accumulation, profiling, and a
-compiled-model cache path without changing that provider variant's shape.
-The OCR example accepts `coreml[:gpu|ane|cpu]`, `coreml-nn[:...]`, and
-`coreml-static[:...]`.
+`OrtExecutionProvider::CoreML` retains its original `ane_only` and `subgraphs` fields. `OrtSessionConfig::with_coreml_config` adds compute-unit selection, MLProgram versus legacy NeuralNetwork format, static-input filtering, specialization strategy, low-precision GPU accumulation, profiling, and a compiled-model cache path without changing that provider variant's shape. The OCR example accepts `coreml[:gpu|ane|cpu]`, `coreml-nn[:...]`, and `coreml-static[:...]`.
 
-`static_input_shapes` only controls which graphs Core ML will claim. It does
-not turn a dynamic ONNX model into a fixed-shape model: the ONNX input itself
-must contain concrete dimensions, and preprocessing must produce that exact
-shape. Static Core ML is most useful for larger models processing repeated,
-fixed-size pages; compilation and provider handoff can outweigh the benefit
-for small mobile models or one-off requests.
+`static_input_shapes` only controls which graphs Core ML will claim. It does not turn a dynamic ONNX model into a fixed-shape model: the ONNX input itself must contain concrete dimensions, and preprocessing must produce that exact shape. Static Core ML is most useful for larger models processing repeated, fixed-size pages; compilation and provider handoff can outweigh the benefit for small mobile models or one-off requests.
 
 ### `webgpu`
 

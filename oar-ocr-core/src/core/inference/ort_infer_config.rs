@@ -1,17 +1,40 @@
 use super::*;
 use crate::core::config::{
-    COREML_CONFIG_ENTRY, OrtCoreMLConfig, OrtExecutionProvider, OrtGraphOptimizationLevel as OG,
-    OrtSessionConfig,
+    AUTO_DEVICE_CONFIG_ENTRY, COREML_CONFIG_ENTRY, OrtCoreMLConfig, OrtExecutionProvider,
+    OrtGraphOptimizationLevel as OG, OrtSessionConfig,
 };
 use ort::ep::ExecutionProviderDispatch;
 use ort::logging::LogLevel;
 use ort::session::builder::{GraphOptimizationLevel as GOL, SessionBuilder};
 
 impl OrtInfer {
+    pub(crate) fn probe_execution_provider(provider: &OrtExecutionProvider) -> ort::Result<()> {
+        initialize_ort_environment()?;
+        let providers = Self::build_execution_providers(std::slice::from_ref(provider), None)?;
+        let providers: Vec<_> = providers
+            .into_iter()
+            .map(ExecutionProviderDispatch::error_on_failure)
+            .collect();
+        // DirectML requires sequential execution and disabled memory patterns.
+        let builder = SessionBuilder::new()?
+            .with_intra_threads(1)?
+            .with_parallel_execution(false)?
+            .with_memory_pattern(false)?;
+        builder.with_execution_providers(providers)?;
+        Ok(())
+    }
+
     pub(super) fn apply_ort_config(
         mut builder: SessionBuilder,
         cfg: &OrtSessionConfig,
     ) -> Result<SessionBuilder, ort::Error> {
+        let resolved;
+        let cfg = if cfg.has_pending_auto_selection() {
+            resolved = cfg.clone().resolve_auto();
+            &resolved
+        } else {
+            cfg
+        };
         if let Some(intra) = cfg.intra_threads {
             builder = builder.with_intra_threads(intra)?;
         }
@@ -44,6 +67,7 @@ impl OrtInfer {
                 3 => LogLevel::Error,
                 _ => LogLevel::Fatal,
             };
+            environment::lower_owned_environment_log_level(logging_level)?;
             builder = builder.with_log_level(logging_level)?;
         }
         if let Some(log_verbosity) = cfg.log_verbosity_level {
@@ -54,7 +78,7 @@ impl OrtInfer {
         }
         if let Some(entries) = &cfg.session_config_entries {
             for (key, value) in entries {
-                if key == COREML_CONFIG_ENTRY {
+                if key == COREML_CONFIG_ENTRY || key == AUTO_DEVICE_CONFIG_ENTRY {
                     continue;
                 }
                 builder = builder.with_config_entry(key, value)?;
@@ -111,16 +135,11 @@ impl OrtInfer {
                     }
                     // cuDNN convolution algorithm search strategy.
                     //
-                    // ORT's CUDA EP defaults to `Exhaustive`, which benchmarks every
-                    // candidate convolution algorithm the first time it sees a given
-                    // input shape. OCR recognition/detection feed variable-width
-                    // tensors (each batch is padded to its own max aspect ratio), so a
-                    // new shape — and a fresh, multi-tens-of-ms exhaustive search —
-                    // recurs on almost every call, starving the GPU. We therefore
-                    // default to `Default` (a fixed heuristic algorithm, no per-shape
-                    // benchmarking), which on PP-OCRv6 cuts detection ~2x and
-                    // recognition ~3x with byte-identical text output. Callers can
-                    // still opt back into `heuristic`/`exhaustive` explicitly.
+                    // Keep Default, the fastest setting measured for variable OCR
+                    // shapes. cuDNN 8 uses a fixed algorithm; cuDNN 9 frontend maps
+                    // Default to FALLBACK, Heuristic to A, and Exhaustive to B.
+                    // Frontend B does not run the legacy exhaustive benchmark.
+                    // Callers can opt into heuristic/exhaustive explicitly.
                     let search = match cudnn_conv_algo_search.as_deref() {
                         Some(s) if s.eq_ignore_ascii_case("heuristic") => {
                             ConvAlgorithmSearch::Heuristic

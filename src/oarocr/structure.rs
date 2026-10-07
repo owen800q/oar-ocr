@@ -5,8 +5,8 @@
 //! and optionally integrate OCR for text extraction.
 
 use super::builder_utils::{
-    build_optional_adapter, default_cpu_region_batch_size, resolve_device_batch_sizes,
-    resolve_model_path, resolve_model_source,
+    apply_gpu_memory_budget, build_optional_adapter, default_cpu_region_batch_size,
+    resolve_device_batch_sizes, resolve_model_path, resolve_model_source,
 };
 use oar_ocr_core::core::config::OrtSessionConfig;
 use oar_ocr_core::core::traits::OrtConfigurable;
@@ -197,6 +197,65 @@ pub struct OARStructureBuilder {
     // Batch sizes
     image_batch_size: Option<usize>,
     region_batch_size: Option<usize>,
+    gpu_memory_budget: Option<usize>,
+}
+
+/// Detection thresholds and merge rules for a layout preset without an explicit
+/// config; PP-StructureV3 defaults cover the earlier 20/23-class models.
+fn default_layout_detection_config(model_name: &str) -> LayoutDetectionConfig {
+    match model_name {
+        "pp-doclayoutv2" => LayoutDetectionConfig::with_pp_doclayoutv2_defaults(),
+        "pp-doclayoutv3" => LayoutDetectionConfig::with_pp_doclayoutv3_defaults(),
+        _ => LayoutDetectionConfig::with_pp_structurev3_defaults(),
+    }
+}
+
+/// Resolves a `layout_model_name` preset, falling back to PP-DocLayout_plus-L.
+fn layout_model_config_for(name: &str) -> oar_ocr_core::domain::adapters::LayoutModelConfig {
+    use oar_ocr_core::domain::adapters::LayoutModelConfig;
+    // Match presets case- and separator-insensitively so the documented
+    // forms (e.g. `PicoDet-L_layout_17cls`, `RT-DETR-H_layout_17cls`,
+    // `PP-DocLayout_plus-L`) resolve correctly. Mirrors the normalization
+    // used by `region_model_name` below.
+    match name.to_lowercase().replace('-', "_").as_str() {
+        "picodet_layout_1x" => LayoutModelConfig::picodet_layout_1x(),
+        "picodet_layout_1x_table" => LayoutModelConfig::picodet_layout_1x_table(),
+        "picodet_s_layout_3cls" => LayoutModelConfig::picodet_s_layout_3cls(),
+        "picodet_l_layout_3cls" => LayoutModelConfig::picodet_l_layout_3cls(),
+        "picodet_s_layout_17cls" => LayoutModelConfig::picodet_s_layout_17cls(),
+        "picodet_l_layout_17cls" => LayoutModelConfig::picodet_l_layout_17cls(),
+        "rt_detr_h_layout_3cls" => LayoutModelConfig::rtdetr_h_layout_3cls(),
+        "rt_detr_h_layout_17cls" => LayoutModelConfig::rtdetr_h_layout_17cls(),
+        "pp_docblocklayout" => LayoutModelConfig::pp_docblocklayout(),
+        "pp_doclayout_s" => LayoutModelConfig::pp_doclayout_s(),
+        "pp_doclayout_m" => LayoutModelConfig::pp_doclayout_m(),
+        "pp_doclayout_l" => LayoutModelConfig::pp_doclayout_l(),
+        "pp_doclayout_plus_l" => LayoutModelConfig::pp_doclayout_plus_l(),
+        "pp_doclayoutv2" | "pp_doclayout_v2" => LayoutModelConfig::pp_doclayoutv2(),
+        "pp_doclayoutv3" | "pp_doclayout_v3" => LayoutModelConfig::pp_doclayoutv3(),
+        _ => {
+            tracing::warn!(
+                requested = %name,
+                "Unknown --layout-model-name preset; falling back to PP-DocLayout_plus-L. \
+                 This may apply the wrong class labels/preprocessing for your model."
+            );
+            LayoutModelConfig::pp_doclayout_plus_l()
+        }
+    }
+}
+
+/// Turns CUDA arena shrinkage on for a CUDA session config unless the caller
+/// already chose a value; CPU-only configs are left untouched.
+fn default_arena_shrinkage(config: &mut OrtSessionConfig) {
+    use oar_ocr_core::core::config::OrtExecutionProvider;
+    let uses_cuda = config
+        .execution_providers
+        .iter()
+        .flatten()
+        .any(|ep| matches!(ep, OrtExecutionProvider::CUDA { .. }));
+    if uses_cuda && config.arena_shrinkage.is_none() {
+        config.arena_shrinkage = Some(true);
+    }
 }
 
 impl OARStructureBuilder {
@@ -256,6 +315,7 @@ impl OARStructureBuilder {
             text_recognition_config: None,
             image_batch_size: None,
             region_batch_size: None,
+            gpu_memory_budget: None,
         }
     }
 
@@ -264,6 +324,20 @@ impl OARStructureBuilder {
     /// This configuration will be applied to all models in the pipeline.
     pub fn ort_session(mut self, config: OrtSessionConfig) -> Self {
         self.ort_session_config = Some(config);
+        self
+    }
+
+    /// Sets a GPU memory budget in bytes without selecting a device.
+    ///
+    /// With `g = floor(bytes / GiB)`, image batches use `clamp(2*g - 6, 1, 8)`
+    /// and text-region batches use `clamp(12*g - 28, 4, 64)`, saturating negative
+    /// values at zero. Thus 4 GiB gives 2/20, and 8 GiB or more gives 8/64.
+    /// Explicit batch sizes take precedence. CUDA sessions cap each arena at half
+    /// the budget and default to idle memory recovery and SameAsRequested growth.
+    /// Existing smaller limits and explicit arena settings are retained. This is a tuning hint, not a device-wide cap:
+    /// other sessions, weights, and driver allocations also consume memory.
+    pub fn gpu_memory_budget(mut self, bytes: usize) -> Self {
+        self.gpu_memory_budget = Some(bytes);
         self
     }
 
@@ -281,6 +355,7 @@ impl OARStructureBuilder {
     /// `pp_doclayout_plus_l` are equivalent. Supported presets:
     /// - `PP-DocLayout_plus-L` (default)
     /// - `PP-DocLayout-S`, `PP-DocLayout-M`, `PP-DocLayout-L`
+    /// - `PP-DocLayoutV2`, `PP-DocLayoutV3`
     /// - `PP-DocBlockLayout`
     /// - `PicoDet_layout_1x`, `PicoDet_layout_1x_table`
     /// - `PicoDet-S_layout_3cls`, `PicoDet-L_layout_3cls`
@@ -669,6 +744,12 @@ impl OARStructureBuilder {
     ///
     /// This method instantiates all adapters and returns a ready-to-use structure analyzer.
     pub fn build(mut self) -> Result<OARStructure, OCRError> {
+        for config in [
+            self.ort_session_config.as_mut(),
+            self.formula_ort_session_config.as_mut(),
+        ] {
+            apply_gpu_memory_budget(config, self.gpu_memory_budget)?;
+        }
         for (component, selection) in [
             ("table_cell_detection", &self.table_cell_detection_type),
             (
@@ -703,6 +784,22 @@ impl OARStructureBuilder {
             Self::validate_batch_size("region_batch_size", size)?;
         }
 
+        // The structure pipeline keeps a dozen CUDA sessions resident, each with
+        // its own memory arena sized to the largest crop it has seen; together
+        // they reach ~19 GB on a multi-page PDF and OOM 16 GB cards. Returning
+        // idle arena memory after each run keeps the peak near 9 GB with
+        // byte-identical output, so it is the default here unless the caller
+        // chose explicitly.
+        for config in [
+            self.ort_session_config.as_mut(),
+            self.formula_ort_session_config.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            default_arena_shrinkage(config);
+        }
+
         // PP-FormulaNet's CUDA autoregressive Loop races on EP arena buffers when
         // its `session.run()`s interleave with other models' (onnxruntime#4829),
         // garbling later formulas. The fix is `CUDA_LAUNCH_BLOCKING=1`, but it
@@ -729,6 +826,11 @@ impl OARStructureBuilder {
                 oar_ocr_core::core::inference::ensure_cuda_launch_blocking();
             }
         }
+
+        self.ort_session_config = self.ort_session_config.map(OrtSessionConfig::resolve_auto);
+        self.formula_ort_session_config = self
+            .formula_ort_session_config
+            .map(OrtSessionConfig::resolve_auto);
 
         // Resolve every model/dict/tokenizer path through the auto-download
         // cache when the `auto-download` feature is enabled. With the feature
@@ -776,6 +878,7 @@ impl OARStructureBuilder {
             self.region_batch_size,
             1,
             cpu_region_batch_size,
+            self.gpu_memory_budget,
         );
 
         // Load character dictionary if OCR is enabled
@@ -811,47 +914,16 @@ impl OARStructureBuilder {
         let mut layout_builder = LayoutDetectionAdapterBuilder::new();
 
         // Use explicit model name or default
-        let layout_model_config = if let Some(name) = &self.layout_model_name {
-            use oar_ocr_core::domain::adapters::LayoutModelConfig;
-            // Match presets case- and separator-insensitively so the documented
-            // forms (e.g. `PicoDet-L_layout_17cls`, `RT-DETR-H_layout_17cls`,
-            // `PP-DocLayout_plus-L`) resolve correctly. Mirrors the normalization
-            // used by `region_model_name` below.
-            match name.to_lowercase().replace('-', "_").as_str() {
-                "picodet_layout_1x" => LayoutModelConfig::picodet_layout_1x(),
-                "picodet_layout_1x_table" => LayoutModelConfig::picodet_layout_1x_table(),
-                "picodet_s_layout_3cls" => LayoutModelConfig::picodet_s_layout_3cls(),
-                "picodet_l_layout_3cls" => LayoutModelConfig::picodet_l_layout_3cls(),
-                "picodet_s_layout_17cls" => LayoutModelConfig::picodet_s_layout_17cls(),
-                "picodet_l_layout_17cls" => LayoutModelConfig::picodet_l_layout_17cls(),
-                "rt_detr_h_layout_3cls" => LayoutModelConfig::rtdetr_h_layout_3cls(),
-                "rt_detr_h_layout_17cls" => LayoutModelConfig::rtdetr_h_layout_17cls(),
-                "pp_docblocklayout" => LayoutModelConfig::pp_docblocklayout(),
-                "pp_doclayout_s" => LayoutModelConfig::pp_doclayout_s(),
-                "pp_doclayout_m" => LayoutModelConfig::pp_doclayout_m(),
-                "pp_doclayout_l" => LayoutModelConfig::pp_doclayout_l(),
-                "pp_doclayout_plus_l" => LayoutModelConfig::pp_doclayout_plus_l(),
-                _ => {
-                    tracing::warn!(
-                        requested = %name,
-                        "Unknown --layout-model-name preset; falling back to PP-DocLayout_plus-L. \
-                         This may apply the wrong class labels/preprocessing for your model."
-                    );
-                    LayoutModelConfig::pp_doclayout_plus_l()
-                }
-            }
-        } else {
-            // Default fallback
-            crate::domain::adapters::LayoutModelConfig::pp_doclayout_plus_l()
+        let layout_model_config = match &self.layout_model_name {
+            Some(name) => layout_model_config_for(name),
+            None => crate::domain::adapters::LayoutModelConfig::pp_doclayout_plus_l(),
         };
 
-        layout_builder = layout_builder.model_config(layout_model_config);
-
-        // If caller didn't provide an explicit layout config, fall back to PP-StructureV3 defaults.
         let effective_layout_cfg = self
             .layout_detection_config
             .clone()
-            .unwrap_or_else(LayoutDetectionConfig::with_pp_structurev3_defaults);
+            .unwrap_or_else(|| default_layout_detection_config(&layout_model_config.model_name));
+        layout_builder = layout_builder.model_config(layout_model_config);
         layout_builder = layout_builder.with_config(effective_layout_cfg);
 
         if let Some(ref ort_config) = self.ort_session_config {
@@ -3527,6 +3599,77 @@ impl OARStructure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_presets_include_doclayout_v2_and_v3() {
+        for (name, expected) in [
+            ("PP-DocLayoutV2", "pp-doclayoutv2"),
+            ("pp_doclayout_v2", "pp-doclayoutv2"),
+            ("PP-DocLayoutV3", "pp-doclayoutv3"),
+            ("PP-DocLayout-V3", "pp-doclayoutv3"),
+        ] {
+            let config = layout_model_config_for(name);
+            assert_eq!(config.model_name, expected, "{name}");
+            assert_eq!(config.num_classes, 25, "{name}");
+        }
+        assert_eq!(
+            layout_model_config_for("unknown").model_name,
+            layout_model_config_for("PP-DocLayout_plus-L").model_name
+        );
+    }
+
+    #[test]
+    fn layout_presets_select_their_detection_defaults() {
+        let json = |config: LayoutDetectionConfig| serde_json::to_value(config).unwrap();
+        for (preset, expected) in [
+            (
+                "PP-DocLayoutV2",
+                LayoutDetectionConfig::with_pp_doclayoutv2_defaults(),
+            ),
+            (
+                "PP-DocLayoutV3",
+                LayoutDetectionConfig::with_pp_doclayoutv3_defaults(),
+            ),
+            (
+                "PP-DocLayout_plus-L",
+                LayoutDetectionConfig::with_pp_structurev3_defaults(),
+            ),
+        ] {
+            let name = layout_model_config_for(preset).model_name;
+            assert_eq!(
+                json(default_layout_detection_config(&name)),
+                json(expected),
+                "{preset}"
+            );
+        }
+    }
+
+    #[test]
+    fn arena_shrinkage_defaults_on_for_cuda_only() {
+        use oar_ocr_core::core::config::OrtExecutionProvider;
+        let cuda = || OrtExecutionProvider::CUDA {
+            device_id: None,
+            gpu_mem_limit: None,
+            arena_extend_strategy: None,
+            cudnn_conv_algo_search: None,
+            cudnn_conv_use_max_workspace: None,
+        };
+
+        let mut config = OrtSessionConfig::new().with_execution_providers(vec![cuda()]);
+        default_arena_shrinkage(&mut config);
+        assert_eq!(config.arena_shrinkage, Some(true));
+
+        let mut explicit = OrtSessionConfig::new()
+            .with_execution_providers(vec![cuda()])
+            .with_arena_shrinkage(false);
+        default_arena_shrinkage(&mut explicit);
+        assert_eq!(explicit.arena_shrinkage, Some(false));
+
+        let mut cpu =
+            OrtSessionConfig::new().with_execution_providers(vec![OrtExecutionProvider::CPU]);
+        default_arena_shrinkage(&mut cpu);
+        assert_eq!(cpu.arena_shrinkage, None);
+    }
 
     #[test]
     fn test_structure_builder_new() {
