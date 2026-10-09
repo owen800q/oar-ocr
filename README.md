@@ -13,8 +13,24 @@ A native Rust toolkit for OCR, document layout analysis, and vision-language doc
 - Document structure analysis for layout, tables, formulas, seals, orientation, and rectification.
 - Native Candle inference for compact document VLMs through the `oar-ocr-vl` crate.
 - CPU and GPU execution, model auto-download, and in-memory ONNX model loading.
+- Any supported VLM loads by its Hugging Face model ID and downloads on first use.
+- One documented [page JSON format](docs/page-format.md) from both the classic and vision-language pipelines.
+- The `oar` command-line tool for OCR, structure analysis, and VLM parsing of images and PDFs.
 
 ## Quick Start
+
+### Command line
+
+Install the standalone tool with `cargo install oar-ocr-cli` (or add `--features cuda`). Inputs can be images or PDFs. Models download automatically; `auto` selects an available compiled device.
+
+```bash
+oar ocr page.png
+oar structure page.png -o documents
+oar parse --model PaddlePaddle/PaddleOCR-VL-1.5 page.png
+oar structure report.pdf --pages 1-3 --format json
+```
+
+See the [CLI guide](https://github.com/GreatV/oar-ocr/blob/main/oar-ocr-cli/README.md) for JSON output, model overrides, and local checkpoints.
 
 ### Installation
 
@@ -36,27 +52,14 @@ Builders also accept raw ONNX bytes such as `include_bytes!`, allowing models to
 
 ### OCR Pipeline
 
-With `auto-download`, pass registered model names directly. Otherwise, replace them with local paths.
+The `pp_ocrv6` preset configures a PP-OCRv6 pipeline by model size, filling in the model names, the matching dictionary, and the official detection thresholds. With `auto-download`, the names resolve through the model registry; without it they resolve as local paths, so nothing changes for offline setups.
 
 ```rust
-use oar_ocr::domain::tasks::TextDetectionConfig;
 use oar_ocr::prelude::*;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ocr = OAROCRBuilder::new(
-        "pp-ocrv6_tiny_det.onnx",
-        "pp-ocrv6_tiny_rec.onnx",
-        "ppocrv6_tiny_dict.txt",
-    )
-    .text_detection_config(TextDetectionConfig {
-        score_threshold: 0.2,
-        box_threshold: 0.45,
-        unclip_ratio: 1.4,
-        max_candidates: 3000,
-        ..Default::default()
-    })
-    .build()?;
+    let ocr = OAROCRBuilder::pp_ocrv6(PpOcrV6Size::Small).build()?;
 
     let image = load_image(Path::new("document.jpg"))?;
     let results = ocr.predict(vec![image])?;
@@ -71,21 +74,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+The preset's detection thresholds are defaults, so a `text_type` like `seal` still applies its own detection settings, and an explicit `text_detection_config` overrides everything. Sizes pick the models, the dictionary, and PaddleOCR's per-size box threshold (0.4 for Tiny, 0.45 for Small and Medium): `PpOcrV6Size::Tiny` runs the fastest pair over its reduced dictionary.
+
+```rust
+use oar_ocr::prelude::*;
+use std::path::Path;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ocr = OAROCRBuilder::pp_ocrv6(PpOcrV6Size::Tiny).build()?;
+
+    let image = load_image(Path::new("document.jpg"))?;
+    let results = ocr.predict(vec![image])?;
+    for region in &results[0].text_regions {
+        if let Some((text, confidence)) = region.text_with_confidence() {
+            println!("{text} ({confidence:.2})");
+        }
+    }
+
+    Ok(())
+}
+```
+
 ### Document Structure Analysis
+
+The `pp_structurev3` preset configures the PP-StructureV3-style stack: PP-DocLayoutV3 layout, PP-OCRv6 Tiny text recognition, table classification, SLANeXt wired and SLANet+ wireless table structure, wired cell detection, and the table dictionary.
 
 ```rust
 use oar_ocr::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let structure = OARStructureBuilder::new("pp-doclayout_plus-l.onnx")
-        .with_table_classification("pp-lcnet_x1_0_table_cls.onnx")
-        .with_table_structure_recognition("slanet_plus.onnx", "wireless")
-        .table_structure_dict_path("table_structure_dict_ch.txt")
+    let structure = OARStructureBuilder::pp_structurev3().build()?;
+
+    let result = structure.predict("document.jpg")?;
+    println!("{}", result.to_markdown());
+
+    Ok(())
+}
+```
+
+The exact chain the preset expands to, for swapping individual models:
+
+```rust
+use oar_ocr::prelude::*;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let structure = OARStructureBuilder::new("pp-doclayoutv3.onnx")
+        .layout_model_name("PP-DocLayoutV3")
         .with_ocr(
-            "pp-ocrv5_mobile_det.onnx",
-            "pp-ocrv5_mobile_rec.onnx",
-            "ppocrv5_dict.txt",
+            "pp-ocrv6_tiny_det.onnx",
+            "pp-ocrv6_tiny_rec.onnx",
+            "ppocrv6_tiny_dict.txt",
         )
+        .with_table_classification("pp-lcnet_x1_0_table_cls.onnx")
+        .with_wired_table_structure("slanext_wired.onnx")
+        .with_wireless_table_structure("slanet_plus.onnx")
+        .with_wired_table_cell_detection("rt-detr-l_wired_table_cell_det.onnx")
+        .table_structure_dict_path("table_structure_dict_ch.txt")
         .build()?;
 
     let result = structure.predict("document.jpg")?;
@@ -94,6 +138,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Vision-Language Page Parsing
+
+With `cargo add oar-ocr-vl --features auto-download` (plus `cargo add image` for decoding), any supported VLM loads by its Hugging Face model ID; the checkpoint downloads from ModelScope (or Hugging Face) on first use and is cached under `~/.oar`.
+
+```rust
+use oar_ocr_vl::{
+    AnyPageParser, AnyPageParserModel, AnyPageParserOptions, AnyPageParserPretrainedOptions,
+    PageParser, auto_device,
+};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let parser = AnyPageParser::from_pretrained(
+        AnyPageParserModel::PaddleOcrVl1_5,
+        auto_device(),
+        &AnyPageParserPretrainedOptions::default(),
+    )?;
+
+    let image = image::open("document.jpg")?.to_rgb8();
+    let page = parser.parse_page(&image, &AnyPageParserOptions::default())?;
+    println!("{}", page.markdown.unwrap_or_default());
+
+    Ok(())
+}
+```
+
+Both pipelines export the same [page JSON](docs/page-format.md): `page.to_json(width, height)` here, and `StructureResult::to_json(width, height)` for the classic structure pipeline.
 
 ## Supported Models
 
@@ -143,6 +214,7 @@ See the [`oar-ocr-vl` guide](oar-ocr-vl/README.md) for setup and [`oar-ocr-vl/ex
 ## Documentation
 
 - [Usage guide](docs/usage.md) — APIs, builder patterns, accelerators, and model loading
+- [Page JSON format](docs/page-format.md) — the shared output schema of both pipelines
 - [Benchmarking](docs/benchmarking.md) — reproducible pipeline baselines and comparisons
 - [Cargo features](docs/features.md) — defaults, execution providers, and feature combinations
 - [Pre-trained models](docs/models.md) — model files, dictionaries, and auto-download behavior
