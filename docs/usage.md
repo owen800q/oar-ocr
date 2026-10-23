@@ -208,7 +208,7 @@ let structure = OARStructureBuilder::new("picodet-l_layout_17cls.onnx")
 
 ### IndraOcrBuilder - Indra OCR
 
-[Indra OCR](https://huggingface.co/datalab-to/indra-ocr) is Datalab's CPU-first page reader: about 18 MB of ONNX models that turn a page into lines with boxes, layout blocks in reading order (text, section headers, lists, tables, captions, footnotes, page headers and footers), and Markdown with tables as HTML. It reads Latin, Cyrillic, Greek, Devanagari, Bengali, and Chinese, turns quarter-turned pages upright, and straightens small tilts. `oar_ocr::indra` reproduces the reference pipeline's OCR mode; reading a PDF's own text layer is not supported, so render PDF pages to images first. Download the models from Hugging Face; they are not part of the auto-download registry, and their weights use a modified OpenRAIL-M license.
+[Indra OCR](https://huggingface.co/datalab-to/indra-ocr) is Datalab's CPU-first page reader: small ONNX models (about 76 MB, 46 MB of them n-gram language models for lines a recognizer is unsure of) that turn a page into lines with boxes, layout blocks in reading order (text, section headers, lists, tables, captions, footnotes, page headers and footers), and Markdown with tables as HTML. A script classifier sends each line to one of four recognizers: Latin, Cyrillic, and Greek (including handwriting); Chinese, Japanese, and Korean; Arabic, Persian, Urdu, and Hebrew (read into logical order, with right-to-left pages read right column first); and Indic, Thai, Lao, Khmer, Georgian, Armenian, and other scripts. It turns quarter-turned pages upright, straightens tilts up to 45 degrees, reads light text on dark ground, and reads Chinese and Japanese pages set in vertical columns. `oar_ocr::indra` reproduces the reference pipeline's OCR mode (`indra-ocr` 1.1.2 with the v1.1.0 models; the earlier v3.1 model set still loads), with two fixes: token positions from the tall-window recognizer are no longer stretched, which moves some split-line boxes, and tables built from the table heads no longer drop a cell that a neighbour's span would cover. Reading a PDF's own text layer is not supported, so render PDF pages to images first. Download the models from Hugging Face; they are not part of the auto-download registry, and their weights use a modified OpenRAIL-M license.
 
 ```bash
 hf download datalab-to/indra-ocr --local-dir models/datalab-to/indra-ocr
@@ -234,9 +234,10 @@ let json = page.to_json(); // the shared page JSON, with pipeline "indra"
 |--------|-------------|
 | `.math(bool)` | Read lines with math as text with inline LaTeX (off by default; needs the `math_*` model files) |
 | `.keep_furniture(bool)` | Keep page headers and footers in the Markdown (left out by default; always listed in `blocks`) |
+| `.table_heads(bool)` | Build tables from the order model's row, column and cell heads instead of from line geometry (off by default, as in the reference; a table the heads fail on falls back to geometry) |
 | `.ort_session(config)` | Apply ONNX Runtime configuration to every model |
 
-Boxes are in the upright page: `page.rotation` is the quarter turn that was undone and `page.width` / `page.height` its size, and `page.skew` the small tilt that was straightened (boxes are mapped back across it). The pipeline is built for CPU; run `cargo run --release --example indra -- --model-dir models/datalab-to/indra-ocr page.png` to try it.
+Boxes are in the upright page: `page.rotation` is the quarter turn that was undone and `page.width` / `page.height` its size, and `page.skew` the tilt that was straightened (boxes are mapped back across it). A page set in vertical columns has `page.vertical` set; it is read turned a quarter turn, but its boxes are on the page as it is and `page.rotation` stays 0. The pipeline is built for CPU; run `cargo run --release --example indra -- --model-dir models/datalab-to/indra-ocr page.png` to try it.
 
 ## GPU Acceleration
 
@@ -686,6 +687,33 @@ cargo run -p oar-ocr-vl --features cuda --example ovisocr2 -- \
 
 Add `--keep-image-tags` to retain visual-region image-tag references, or use `--max-tokens` to override the 16,384-token default. The example does not create the referenced bounding-box crop files.
 
+## OXR-1.0
+
+[OXR-1.0](https://huggingface.co/SoMarkAI/OXR-1.0) recognizes regions supplied by PP-DocLayout through the explicit model ID `SoMarkAI/OXR-1.0`.
+
+```rust,no_run
+use candle_core::Device;
+use oar_ocr_vl::{AnyPageParser, AnyPageParserLoadOptions, AnyPageParserModel, AnyPageParserOptions, PageParser};
+use oar_ocr_vl::utils::image::load_image;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let parser = AnyPageParser::from_dir_with_options(
+        AnyPageParserModel::Oxr,
+        "SoMarkAI/OXR-1.0",
+        Device::Cpu,
+        &AnyPageParserLoadOptions::default()
+            .with_layout_dir("PaddlePaddle/PP-DocLayoutV3_safetensors"),
+    )?;
+    let page = parser.parse_page(&load_image("document.png")?, &AnyPageParserOptions::default())?;
+    println!("{}", page.markdown.unwrap_or_default());
+    Ok(())
+}
+```
+
+The weights are under [SoMark's OXR License](https://huggingface.co/SoMarkAI/OXR-1.0/blob/main/LICENSE), Apache 2.0 plus commercial thresholds, an attribution duty, and a ban on competing hosted APIs; users must accept these terms before using the weights.
+
+See the [crate guide](../oar-ocr-vl/README.md#oxr-10) for OXR tasks, PP-DocLayout integration, and generation options.
+
 ## MonkeyOCRv2-S/B-Parsing
 
 [MonkeyOCRv2-S-Parsing](https://huggingface.co/zenosai/MonkeyOCRv2-S-Parsing) and [MonkeyOCRv2-B-Parsing](https://huggingface.co/zenosai/MonkeyOCRv2-B-Parsing) are 0.6B and 0.7B document parsers. They pair Monkey ViT-S and ViT-B vision encoders, respectively, with the same Qwen3-0.6B decoder. The native Candle implementation reads either checkpoint's dimensions from its configuration and supports the five official tasks: `Layout`, `EndToEnd`, `Text`, `Formula`, and `Table`.
@@ -973,7 +1001,7 @@ cargo run -p oar-ocr-vl --features cuda \
 
 ## DocParser
 
-DocParser provides a unified API for external layout-first document parsing with VL-based recognition. PaddleOCR-VL, GLM-OCR, MonkeyOCRv2, OvisOCR2, HunyuanOCR, MinerU2.5/Pro, and MinerU-Diffusion implement `RecognitionBackend`. The `doc_parser` CLI example exposes the PaddleOCR-VL and GLM-OCR paths; use the other backends through the library API. HPD-Parsing currently supports only its model-native full-page protocol.
+DocParser provides a unified API for external layout-first document parsing with VL-based recognition. PaddleOCR-VL, GLM-OCR, MonkeyOCRv2, OvisOCR2, OXR, HunyuanOCR, MinerU2.5/Pro, and MinerU-Diffusion implement `RecognitionBackend`. The `doc_parser` CLI example exposes the PaddleOCR-VL and GLM-OCR paths; use the other backends through the library API. HPD-Parsing currently supports only its model-native full-page protocol.
 
 Use `parse(&layout, image)` with any `LayoutSource` — `PpDocLayout` is the built-in one and runs on Candle, so no ONNX Runtime is involved. Regions are recognized in layout order and may be grouped into bounded recognition batches. For complete pages, prefer the model-native paths for MonkeyOCRv2, OvisOCR2, HPD-Parsing, HunyuanOCR, and the MinerU family. Except for HPD-Parsing, their `RecognitionBackend` implementations are intended for externally detected crops.
 

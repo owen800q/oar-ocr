@@ -11,10 +11,13 @@ use crate::attention::{
 use crate::error::Error;
 #[cfg(feature = "cuda")]
 use crate::runtime::decoder_graph::CudaGraphDrainGuard;
+use crate::runtime::image::pil_lanczos_resize;
+pub use crate::runtime::trace::GenerationTrace;
+use crate::runtime::trace::top3;
 use crate::utils::{candle_to_ocr_inference, candle_to_ocr_processing};
 use candle_core::{D, DType, Device, IndexOp, Tensor};
 use candle_nn::Module;
-use image::{RgbImage, imageops::FilterType};
+use image::RgbImage;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
@@ -164,7 +167,7 @@ impl PaddleOcrVl {
         let merge = self.image_cfg.merge_size;
         let factor = patch.checked_mul(merge as u32)?;
         let (height, width) = if self.image_cfg.do_resize {
-            processing::smart_resize(
+            processing::reference_smart_resize(
                 image.height(),
                 image.width(),
                 factor,
@@ -227,7 +230,7 @@ impl PaddleOcrVl {
             });
         }
 
-        let results = self.generate_tokens_internal(images, tasks, max_new_tokens)?;
+        let results = self.generate_tokens_internal(images, tasks, max_new_tokens, None)?;
         Ok(results
             .into_iter()
             .enumerate()
@@ -257,15 +260,39 @@ impl PaddleOcrVl {
                 ),
             });
         }
-        self.generate_tokens_internal(images, tasks, max_new_tokens)
+        self.generate_tokens_internal(images, tasks, max_new_tokens, None)
     }
 
     /// Internal generation implementation supporting batched inference.
+    /// Greedy generation of one image with per-step top-3 logits, for
+    /// numerical alignment against the upstream reference (see the
+    /// `paddleocr_vl_alignment` test).
+    pub fn generate_traced(
+        &self,
+        image: &RgbImage,
+        task: PaddleOcrVlTask,
+        max_new_tokens: usize,
+    ) -> Result<GenerationTrace, Error> {
+        let mut step_top = Vec::new();
+        let tokens = self
+            .generate_tokens_internal(
+                std::slice::from_ref(image),
+                &[task],
+                max_new_tokens,
+                Some(&mut step_top),
+            )?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        Ok(GenerationTrace { tokens, step_top })
+    }
+
     fn generate_tokens_internal(
         &self,
         images: &[RgbImage],
         tasks: &[PaddleOcrVlTask],
         max_new_tokens: usize,
+        mut step_top: Option<&mut Vec<[(u32, f32); 3]>>,
     ) -> Result<Vec<Vec<u32>>, Error> {
         let batch_size = images.len();
 
@@ -276,20 +303,18 @@ impl PaddleOcrVl {
             // The official spotting preprocessing hardcodes LANCZOS for the 2x
             // pre-upscale (README inference script), independent of the
             // processor's `resample` (which only governs the model-internal
-            // smart_resize). Match it with Lanczos3 here.
-            let resize_filter = FilterType::Lanczos3;
+            // smart_resize). Match Pillow's LANCZOS exactly here.
             let mut processed = Vec::with_capacity(images.len());
             for (img, task) in images.iter().zip(tasks.iter()) {
                 if task.needs_spotting_preprocess()
                     && img.width() < SPOTTING_UPSCALE_THRESHOLD
                     && img.height() < SPOTTING_UPSCALE_THRESHOLD
                 {
-                    processed.push(image::imageops::resize(
+                    processed.push(pil_lanczos_resize(
                         img,
                         img.width().saturating_mul(2),
                         img.height().saturating_mul(2),
-                        resize_filter,
-                    ));
+                    )?);
                 } else {
                     processed.push(img.clone());
                 }
@@ -532,6 +557,12 @@ impl PaddleOcrVl {
         for step in 0..max_new_tokens {
             if finished.iter().all(|&f| f) {
                 break;
+            }
+            if let Some(step_top) = step_top.as_deref_mut() {
+                step_top.push(
+                    top3(&logits_list[0])
+                        .map_err(|e| candle_to_ocr_inference("PaddleOCR-VL", "trace logits", e))?,
+                );
             }
             let mut next_tokens: Vec<u32> = Vec::with_capacity(batch_size);
             for (i, logits) in logits_list.iter().enumerate() {

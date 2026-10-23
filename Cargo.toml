@@ -3,7 +3,7 @@ members = [".", "oar-ocr-derive", "oar-ocr-core", "oar-ocr-vl", "oar-ocr-bench",
 resolver = "2"
 
 [workspace.package]
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -12,8 +12,8 @@ repository = "https://github.com/greatv/oar-ocr"
 homepage = "https://github.com/greatv/oar-ocr"
 
 [workspace.dependencies]
-oar-ocr-core = { version = "0.10.0", path = "oar-ocr-core", default-features = false }
-oar-ocr-derive = { version = "0.10.0", path = "oar-ocr-derive", default-features = false }
+oar-ocr-core = { version = "0.10.1", path = "oar-ocr-core", default-features = false }
+oar-ocr-derive = { version = "0.10.1", path = "oar-ocr-derive", default-features = false }
 
 # Shared third-party dependencies (kept in sync via workspace inheritance).
 clap = { version = "4.5.42", features = ["derive"] }
@@ -108,6 +108,12 @@ tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "signal"], 
 tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 uuid = { version = "1.11", features = ["v4"], optional = true }
+# Indra OCR: Hangul jamo composition, right-to-left lines, and its n-gram
+# language models (.npz archives).
+unicode-bidi = "0.3.18"
+unicode-normalization = "0.1.25"
+unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
 ab_glyph = "0.2"
