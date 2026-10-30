@@ -13,6 +13,8 @@
 //!   backbone)
 //! - `mineru_diffusion` - MinerU-Diffusion-V1 block-diffusion document OCR
 //!   (Qwen2-VL vision + SDAR decoder)
+//! - `minicpm_ocr` - MiniCPM-OCR 1.0 region recognition and PP-DocLayout
+//!   page parsing (SigLIP vision + Qwen3.5)
 //! - `monkeyocrv2` - MonkeyOCRv2-S/B-Parsing full-page and region parsing
 //! - `jina_ocr` - jina-ocr-v1 end-to-end page-to-Markdown parser (SAM+CLIP
 //!   DeepEncoder over a DeepSeek-V2 MoE decoder)
@@ -21,6 +23,8 @@
 //! - `ovisocr2` - OvisOCR2 end-to-end page-to-Markdown parser (Qwen3.5)
 //! - `ovisocr3` - OvisOCR3 Markdown, structured-page, and region recognition (Qwen3.5)
 //! - `oxr` - SoMark OXR-1.0 region recognition and PP-DocLayout page parsing
+//! - `unlimited_ocr` - Unlimited-OCR-2 single- and multi-page parsing
+//!   (DeepEncoder + DeepSeek-V2 MoE with DASH block-sparse attention)
 //! - `wevisdoc` - WeVisDoc end-to-end page-to-Markdown parser (Qwen3-VL
 //!   backbone with DeepStack)
 //! - `xiaomi_ocr` - Xiaomi-OCR-0 end-to-end page-to-Markdown parser
@@ -85,6 +89,8 @@ pub mod layout;
 pub mod mineru;
 #[path = "models/mineru_diffusion/mod.rs"]
 pub mod mineru_diffusion;
+#[path = "models/minicpm_ocr/mod.rs"]
+pub mod minicpm_ocr;
 #[path = "models/monkeyocrv2/mod.rs"]
 pub mod monkeyocrv2;
 #[path = "models/ovisocr2/mod.rs"]
@@ -100,6 +106,8 @@ pub mod pp_doclayout;
 pub mod structure;
 #[path = "models/teleocr/mod.rs"]
 pub mod teleocr;
+#[path = "models/unlimited_ocr/mod.rs"]
+pub mod unlimited_ocr;
 pub mod utils;
 #[path = "models/wevisdoc/mod.rs"]
 pub mod wevisdoc;
@@ -126,11 +134,15 @@ pub use mineru::{MinerU, MinerUParseOptions};
 pub use mineru_diffusion::{
     DiffusionGenerationConfig, MinerUDiffusion, MinerUDiffusionParseOptions,
 };
+pub use minicpm_ocr::{MiniCpmOcr, MiniCpmOcrGenerationOptions, MiniCpmOcrTask};
 pub use monkeyocrv2::{MonkeyOcrV2, MonkeyOcrV2ParseOptions, MonkeyOcrV2Task};
 pub use ovisocr2::{OvisOcr2, OvisOcr2ParseOptions};
 pub use ovisocr3::{OvisOcr3, OvisOcr3ParseMode, OvisOcr3ParseOptions};
 pub use oxr::{Oxr, OxrGenerationOptions, OxrTask};
 pub use teleocr::{TeleOcr, TeleOcrTask};
+pub use unlimited_ocr::{
+    UnlimitedOcr, UnlimitedOcrGenerationOptions, UnlimitedOcrParseOptions, UnlimitedOcrViewMode,
+};
 pub use wevisdoc::{WeVisDoc, WeVisDocParseOptions};
 pub use xiaomi_ocr::{XiaomiOcr, XiaomiOcrParseOptions};
 pub use youtu_parsing_omni::{YoutuParsingOmni, YoutuParsingOmniParseOptions};

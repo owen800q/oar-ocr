@@ -13,6 +13,7 @@ use crate::jina_ocr::{JinaOcr, JinaOcrParseOptions};
 use crate::layout::LayoutSource;
 use crate::mineru::{MinerU, MinerUParseOptions};
 use crate::mineru_diffusion::{MinerUDiffusion, MinerUDiffusionParseOptions};
+use crate::minicpm_ocr::MiniCpmOcr;
 use crate::monkeyocrv2::{MonkeyOcrV2, MonkeyOcrV2ParseOptions};
 use crate::ovisocr2::{OvisOcr2, OvisOcr2ParseOptions};
 use crate::ovisocr3::{OvisOcr3, OvisOcr3ParseOptions};
@@ -21,6 +22,7 @@ use crate::paddleocr_vl::PaddleOcrVl;
 use crate::pipeline::page_parser::{LayoutPageParser, LayoutPageParserOptions};
 use crate::pp_doclayout::PpDocLayout;
 use crate::teleocr::TeleOcr;
+use crate::unlimited_ocr::{UnlimitedOcr, UnlimitedOcrParseOptions};
 use crate::wevisdoc::{WeVisDoc, WeVisDocParseOptions};
 use crate::xiaomi_ocr::{XiaomiOcr, XiaomiOcrParseOptions};
 use crate::youtu_parsing_omni::{YoutuParsingOmni, YoutuParsingOmniParseOptions};
@@ -93,6 +95,8 @@ pub enum AnyPageParserModel {
     MinerUPro,
     /// opendatalab/MinerU-Diffusion-V1-0320-2.5B.
     MinerUDiffusion,
+    /// openbmb/MiniCPM-OCR-1.0, with PP-DocLayout regions and reading order.
+    MiniCpmOcr,
     /// zenosai/MonkeyOCRv2-S-Parsing.
     MonkeyOcrV2S,
     /// zenosai/MonkeyOCRv2-B-Parsing.
@@ -104,6 +108,8 @@ pub enum AnyPageParserModel {
     /// SoMarkAI/OXR-1.0, with PP-DocLayout regions and reading order.
     /// Weights are subject to SoMark's OXR License.
     Oxr,
+    /// baidu/Unlimited-OCR-2.
+    UnlimitedOcr2,
     /// tencent/WeVisDoc-2B.
     WeVisDoc2B,
     /// tencent/WeVisDoc-4B.
@@ -141,6 +147,7 @@ const MODEL_IDS: &[(&str, AnyPageParserModel)] = &[
         "opendatalab/MinerU-Diffusion-V1-0320-2.5B",
         AnyPageParserModel::MinerUDiffusion,
     ),
+    ("openbmb/MiniCPM-OCR-1.0", AnyPageParserModel::MiniCpmOcr),
     (
         "zenosai/MonkeyOCRv2-S-Parsing",
         AnyPageParserModel::MonkeyOcrV2S,
@@ -152,6 +159,7 @@ const MODEL_IDS: &[(&str, AnyPageParserModel)] = &[
     ("ATH-MaaS/OvisOCR2", AnyPageParserModel::OvisOcr2),
     ("ATH-MaaS/OvisOCR3", AnyPageParserModel::OvisOcr3),
     ("SoMarkAI/OXR-1.0", AnyPageParserModel::Oxr),
+    ("baidu/Unlimited-OCR-2", AnyPageParserModel::UnlimitedOcr2),
     ("tencent/WeVisDoc-2B", AnyPageParserModel::WeVisDoc2B),
     ("tencent/WeVisDoc-4B", AnyPageParserModel::WeVisDoc4B),
     ("SeerRay-Lab/Xiaomi-OCR-0", AnyPageParserModel::XiaomiOcr),
@@ -182,11 +190,13 @@ impl AnyPageParserModel {
             Self::MinerU2509 => "opendatalab/MinerU2.5-2509-1.2B",
             Self::MinerUPro => "opendatalab/MinerU2.5-Pro-2605-1.2B",
             Self::MinerUDiffusion => "opendatalab/MinerU-Diffusion-V1-0320-2.5B",
+            Self::MiniCpmOcr => "openbmb/MiniCPM-OCR-1.0",
             Self::MonkeyOcrV2S => "zenosai/MonkeyOCRv2-S-Parsing",
             Self::MonkeyOcrV2B => "zenosai/MonkeyOCRv2-B-Parsing",
             Self::OvisOcr2 => "ATH-MaaS/OvisOCR2",
             Self::OvisOcr3 => "ATH-MaaS/OvisOCR3",
             Self::Oxr => "SoMarkAI/OXR-1.0",
+            Self::UnlimitedOcr2 => "baidu/Unlimited-OCR-2",
             Self::WeVisDoc2B => "tencent/WeVisDoc-2B",
             Self::WeVisDoc4B => "tencent/WeVisDoc-4B",
             Self::XiaomiOcr => "SeerRay-Lab/Xiaomi-OCR-0",
@@ -229,7 +239,7 @@ impl FromStr for AnyPageParserModel {
 
 /// Directory-loading options for [`AnyPageParser::from_dir_with_options`].
 ///
-/// The layout-composed models (PaddleOCR-VL, GLM-OCR, TeleOCR, OXR) combine their
+/// The layout-composed models (PaddleOCR-VL, GLM-OCR, TeleOCR, MiniCPM-OCR, OXR) combine their
 /// recognition backbone with an external PP-DocLayout detector, so loading
 /// them needs a PP-DocLayout checkpoint directory in `layout_dir`. Every
 /// other model ignores it.
@@ -288,6 +298,8 @@ pub enum AnyPageParser {
     MinerU(Box<MinerU>),
     /// MinerU-Diffusion block-diffusion two-step parsing.
     MinerUDiffusion(Box<MinerUDiffusion>),
+    /// MiniCPM-OCR recognition over PP-DocLayout regions.
+    MiniCpmOcr(Box<LayoutPageParser<PpDocLayout, MiniCpmOcr>>),
     /// MonkeyOCRv2 model-native parsing.
     MonkeyOcrV2(Box<MonkeyOcrV2>),
     /// OvisOCR2 end-to-end page parsing.
@@ -296,6 +308,8 @@ pub enum AnyPageParser {
     OvisOcr3(Box<OvisOcr3>),
     /// OXR recognition over PP-DocLayout regions; the official D-FINE is not used.
     Oxr(Box<LayoutPageParser<PpDocLayout, Oxr>>),
+    /// Unlimited-OCR-2 end-to-end page parsing.
+    UnlimitedOcr(Box<UnlimitedOcr>),
     /// WeVisDoc end-to-end page parsing.
     WeVisDoc(Box<WeVisDoc>),
     /// Xiaomi-OCR-0 end-to-end page parsing.
@@ -340,6 +354,12 @@ impl From<MinerUDiffusion> for AnyPageParser {
     }
 }
 
+impl From<LayoutPageParser<PpDocLayout, MiniCpmOcr>> for AnyPageParser {
+    fn from(model: LayoutPageParser<PpDocLayout, MiniCpmOcr>) -> Self {
+        Self::MiniCpmOcr(Box::new(model))
+    }
+}
+
 impl From<MonkeyOcrV2> for AnyPageParser {
     fn from(model: MonkeyOcrV2) -> Self {
         Self::MonkeyOcrV2(Box::new(model))
@@ -361,6 +381,12 @@ impl From<OvisOcr3> for AnyPageParser {
 impl From<LayoutPageParser<PpDocLayout, Oxr>> for AnyPageParser {
     fn from(model: LayoutPageParser<PpDocLayout, Oxr>) -> Self {
         Self::Oxr(Box::new(model))
+    }
+}
+
+impl From<UnlimitedOcr> for AnyPageParser {
+    fn from(model: UnlimitedOcr) -> Self {
+        Self::UnlimitedOcr(Box::new(model))
     }
 }
 
@@ -408,7 +434,7 @@ impl AnyPageParser {
     /// checkpoint configs match their public base models, so the directory
     /// cannot be identified reliably on its own. The parser loads through its own
     /// `from_dir` with its own defaults. Layout-composed models (PaddleOCR-VL,
-    /// GLM-OCR, TeleOCR, OXR) additionally need a PP-DocLayout directory, which
+    /// GLM-OCR, TeleOCR, MiniCPM-OCR, OXR) additionally need a PP-DocLayout directory, which
     /// [`from_dir_with_options`](Self::from_dir_with_options) accepts.
     pub fn from_dir(
         model: AnyPageParserModel,
@@ -466,6 +492,11 @@ impl AnyPageParser {
             AnyPageParserModel::MinerUDiffusion => {
                 MinerUDiffusion::from_dir(model_dir, device)?.into()
             }
+            AnyPageParserModel::MiniCpmOcr => LayoutPageParser::new(
+                PpDocLayout::from_dir(required_layout_dir(options, model)?, device.clone())?,
+                MiniCpmOcr::from_dir(model_dir, device)?,
+            )
+            .into(),
             AnyPageParserModel::MonkeyOcrV2S | AnyPageParserModel::MonkeyOcrV2B => {
                 MonkeyOcrV2::from_dir(model_dir, device)?.into()
             }
@@ -476,6 +507,7 @@ impl AnyPageParser {
                 Oxr::from_dir(model_dir, device)?,
             )
             .into(),
+            AnyPageParserModel::UnlimitedOcr2 => UnlimitedOcr::from_dir(model_dir, device)?.into(),
             AnyPageParserModel::WeVisDoc2B | AnyPageParserModel::WeVisDoc4B => {
                 WeVisDoc::from_dir(model_dir, device)?.into()
             }
@@ -516,7 +548,7 @@ impl AnyPageParser {
     /// published only once complete. The layout checkpoint uses its source's
     /// default revision.
     /// ModelScope is the default source; Hugging Face is selectable. The
-    /// layout-composed models (PaddleOCR-VL, GLM-OCR, TeleOCR, OXR) also download
+    /// layout-composed models (PaddleOCR-VL, GLM-OCR, TeleOCR, MiniCPM-OCR, OXR) also download
     /// a PP-DocLayout checkpoint (DEFAULT_LAYOUT_REPO by default) unless the
     /// options point at a local layout directory. Loading then goes
     /// through [`from_dir`](Self::from_dir) with each model's own defaults.
@@ -567,6 +599,7 @@ impl AnyPageParser {
                 | AnyPageParserModel::PaddleOcrVl1_6
                 | AnyPageParserModel::GlmOcr
                 | AnyPageParserModel::TeleOcr
+                | AnyPageParserModel::MiniCpmOcr
                 | AnyPageParserModel::Oxr
         )
     }
@@ -598,10 +631,12 @@ impl PageParser for AnyPageParser {
             Self::MinerUDiffusion(model) => {
                 model.parse_page(image, &mineru_diffusion_options(options))
             }
+            Self::MiniCpmOcr(model) => model.parse_page(image, &layout_options(model, options)),
             Self::MonkeyOcrV2(model) => model.parse_page(image, &monkeyocrv2_options(options)),
             Self::OvisOcr2(model) => model.parse_page(image, &ovisocr2_options(options)),
             Self::OvisOcr3(model) => model.parse_page(image, &ovisocr3_options(options)),
             Self::Oxr(model) => model.parse_page(image, &layout_options(model, options)),
+            Self::UnlimitedOcr(model) => model.parse_page(image, &unlimited_ocr_options(options)),
             Self::WeVisDoc(model) => model.parse_page(image, &wevisdoc_options(options)),
             Self::XiaomiOcr(model) => model.parse_page(image, &xiaomi_options(options)),
             Self::YoutuParsingOmni(model) => {
@@ -689,6 +724,14 @@ fn wevisdoc_options(options: &AnyPageParserOptions) -> WeVisDocParseOptions {
     let mut model_options = WeVisDocParseOptions::default();
     if let Some(max_new_tokens) = options.max_new_tokens {
         model_options.max_new_tokens = max_new_tokens;
+    }
+    model_options
+}
+
+fn unlimited_ocr_options(options: &AnyPageParserOptions) -> UnlimitedOcrParseOptions {
+    let mut model_options = UnlimitedOcrParseOptions::default();
+    if let Some(max_new_tokens) = options.max_new_tokens {
+        model_options.generation = model_options.generation.with_max_new_tokens(max_new_tokens);
     }
     model_options
 }

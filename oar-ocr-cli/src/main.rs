@@ -34,6 +34,7 @@ const PARSERS: &[AnyPageParserModel] = &[
     AnyPageParserModel::MinerU2509,
     AnyPageParserModel::MinerUPro,
     AnyPageParserModel::MinerUDiffusion,
+    AnyPageParserModel::MiniCpmOcr,
     AnyPageParserModel::MonkeyOcrV2S,
     AnyPageParserModel::MonkeyOcrV2B,
     AnyPageParserModel::OvisOcr2,
@@ -47,6 +48,7 @@ const PARSERS: &[AnyPageParserModel] = &[
     AnyPageParserModel::PaddleOcrVl1_6,
     AnyPageParserModel::GlmOcr,
     AnyPageParserModel::TeleOcr,
+    AnyPageParserModel::UnlimitedOcr2,
     AnyPageParserModel::YoutuParsingOmni,
 ];
 
