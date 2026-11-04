@@ -145,6 +145,14 @@ HunyuanOCR 1.5's `generate_joint(&images, instruction, max_new_tokens)` and Ovis
 
 HPD-Parsing and MonkeyOCRv2 page results include the raw model output alongside the parsed blocks and Markdown. The two MinerU parsers share layout and equation post-processing. Layout-composed backends receive each region's original label, so MiniCPM-OCR uses its seal and inline-formula prompts and per-label token budgets, capped by the caller's limit.
 
+### DPP export
+
+`PageDocument::to_dpp(&context, &options)` and `DocumentOutput::to_dpp(&contexts, &options)` export [Document Parsing Protocol](https://www.parseprotocol.com/guide), pinned to draft `a9c49e2`. `DppOutput` holds the Markdown, the JSON sidecar (one page object, or an array of pages for a document) and a report of the rules the output could not meet.
+
+Supply dimensions with `DppPageContext::default().with_dimensions(width, height)`. `DppOptions::default()` uses input-image pixels; select `document::dpp::DppCoordinateSpace::PdfPoints` with `with_coordinate_space` for PDF-point dimensions. With page preprocessing, use the prepared canvas dimensions.
+
+To retain headers, footers and footnotes in layout-composed input, pass `DocParserOptions::default().with_skip_auxiliary_regions(false).with_auxiliary_labels(Vec::new()).with_markdown_ignore_labels(Vec::new())` through `AnyPageParserOptions::with_doc_parser_options`. Supply table continuation flags through `DppBlockOptions` in each page context.
+
 ## Installation
 
 This crate is self-contained: everything runs on Candle, it does not depend on `oar-ocr-core`, and **no build of it links ONNX Runtime**.
@@ -569,7 +577,7 @@ The loader rejects `crop_mode=false` (the 640-pixel single-view mode). Region re
 
 ### Unlimited-OCR-2
 
-Unlimited-OCR-2 (MIT) parses one or several pages in a single request. It shares jina-ocr-v1's DeepSeek-OCR backbone, a SAM ViT-B + CLIP-L DeepEncoder over a 12-layer DeepSeek-V2 MoE decoder, but replaces the decoder's dense attention with DASH block-sparse attention: every query sees a 128-token local window plus up to 12 routed 32-token blocks of its own page's image tokens, chosen by a learned router, under a two-axis (page, token) RoPE. Direct `generate` with `UnlimitedOcrViewMode::Auto` follows the reference `infer`: one page uses up to 16 dynamic 640px tiles plus a letterboxed 1024px view, and several pages use global views. Multi-page `PageParser::parse_document` resolves `Auto` to `Tiled`, following the [official evaluation/serving recipe](https://huggingface.co/baidu/Unlimited-OCR-2/blob/c14071b549f4fcab10909f3c4acc6a2edb366947/README.md), which selects `crop_mode=True`. Explicit `Global` selects global views for joint parsing.
+Unlimited-OCR-2 (MIT) parses one or several pages in a single request. It shares jina-ocr-v1's DeepSeek-OCR backbone, a SAM ViT-B + CLIP-L DeepEncoder over a 12-layer DeepSeek-V2 MoE decoder, but replaces the decoder's dense attention with DASH block-sparse attention: every query sees a 128-token local window plus up to 12 routed 32-token blocks of its own page's image tokens, chosen by a learned router, under a two-axis (page, token) RoPE. Direct `generate` with `UnlimitedOcrViewMode::Auto` follows the reference `infer`: one page uses up to 16 dynamic 640px tiles plus a letterboxed 1024px view, and several pages use global views. Multi-page `PageParser::parse_document` resolves `Auto` to `Tiled`, following the [official evaluation/serving recipe](https://huggingface.co/baidu/Unlimited-OCR-2/blob/c14071b549f4fcab10909f3c4acc6a2edb366947/README.md), which selects `crop_mode=True`. Explicit `Global` selects global views for joint parsing. `AnyPageParserModel::pages_per_request` returns 10 for this model, the official SGLang page window, and `oar parse` sends that many pages of one input per request.
 
 ```rust
 use oar_ocr_vl::utils::image::load_image;

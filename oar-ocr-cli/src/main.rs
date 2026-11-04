@@ -21,6 +21,7 @@ use std::{
     collections::BTreeSet,
     fs,
     io::{self, Write},
+    ops::Range,
     path::PathBuf,
     process::ExitCode,
     sync::Arc,
@@ -62,6 +63,16 @@ struct Document {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Candle reads this on every CPU matmul and otherwise re-reads /proc/cpuinfo.
+    if std::env::var_os("RAYON_NUM_THREADS").is_none() {
+        let threads = if matches!(&cli.command, Command::Parse(_)) {
+            default_cpu_threads()
+        } else {
+            4
+        };
+        // SAFETY: The process is still single-threaded.
+        unsafe { std::env::set_var("RAYON_NUM_THREADS", threads.to_string()) };
+    }
     tracing_subscriber::fmt()
         .with_max_level(if cli.verbose {
             tracing::Level::INFO
@@ -87,9 +98,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         return Ok(());
     }
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(4)
-        .build_global()?;
+    rayon::ThreadPoolBuilder::new().build_global()?;
     let (paths, json) = match &cli.command {
         Command::Ocr(args) => (&args.images, args.format == OcrFormat::Json),
         Command::Structure(args) => (&args.images, args.format == PageFormat::Json),
@@ -150,6 +159,7 @@ fn run(cli: Cli) -> Result<()> {
                     batch_size: args
                         .batch_size
                         .unwrap_or_else(|| args.workers.saturating_mul(4).max(8)),
+                    per_input: false,
                     replica_count: devices.len(),
                 },
                 make_replica,
@@ -180,6 +190,7 @@ fn run(cli: Cli) -> Result<()> {
                         destinations,
                         mode,
                         batch_size: PAGE_BATCH_SIZE,
+                        per_input: false,
                         replica_count: devices.len(),
                     },
                     make_replica,
@@ -213,6 +224,7 @@ fn run(cli: Cli) -> Result<()> {
                 destinations,
                 mode,
                 PAGE_BATCH_SIZE,
+                false,
                 |images, pages, first_index| {
                     model
                         .predict(images)?
@@ -256,6 +268,7 @@ fn run(cli: Cli) -> Result<()> {
                         destinations,
                         mode,
                         batch_size: PAGE_BATCH_SIZE,
+                        per_input: false,
                         replica_count: devices.len(),
                     },
                     make_replica,
@@ -293,6 +306,7 @@ fn run(cli: Cli) -> Result<()> {
                 destinations,
                 mode,
                 PAGE_BATCH_SIZE,
+                false,
                 |images, pages, first_index| {
                     let dimensions = images.iter().map(RgbImage::dimensions).collect::<Vec<_>>();
                     model
@@ -315,46 +329,11 @@ fn run(cli: Cli) -> Result<()> {
             )
         }
         Command::Parse(args) => {
+            let batch_size = args.model.context("missing --model")?.pages_per_request();
             let mut options = AnyPageParserOptions::default();
             if let Some(tokens) = args.max_tokens {
                 options = options.with_max_new_tokens(tokens);
             }
-            let parse_pages = move |parser: &mut AnyPageParser,
-                                    images: Vec<RgbImage>,
-                                    pages: &[(Arc<Input>, usize)],
-                                    _first_index: usize|
-                  -> Result<Vec<Document>> {
-                images
-                    .into_iter()
-                    .zip(pages.iter().map(|(input, number)| (&**input, *number)))
-                    .map(|(image, (input, _))| {
-                        let path = &input.path;
-                        let page = parser
-                            .parse_page(&image, &options)
-                            .with_context(|| format!("could not parse {}", path.display()))?;
-                        for diagnostic in &page.diagnostics {
-                            tracing::warn!("{}: {}", path.display(), diagnostic.message);
-                        }
-                        let text = page.markdown.clone().unwrap_or_else(|| {
-                            let blocks = page
-                                .blocks
-                                .iter()
-                                .filter_map(|b| b.content.as_deref())
-                                .collect::<Vec<_>>()
-                                .join("\n\n");
-                            if blocks.is_empty() {
-                                page.raw_output.clone().unwrap_or_default()
-                            } else {
-                                blocks
-                            }
-                        });
-                        Ok(Document {
-                            text,
-                            json: page.to_json(image.width(), image.height()),
-                        })
-                    })
-                    .collect()
-            };
             if multi {
                 let make_replica =
                     replica_factory(&devices, |device: &str| load_parser(args, device));
@@ -368,60 +347,71 @@ fn run(cli: Cli) -> Result<()> {
                         dpi: cli.common.dpi,
                         destinations,
                         mode,
-                        batch_size: 1,
+                        batch_size,
+                        per_input: true,
                         replica_count: devices.len(),
                     },
                     make_replica,
-                    parse_pages,
+                    move |parser, images, pages, _| {
+                        parse_documents(parser, &images, &options, &pages[0].0)
+                    },
                 );
             }
             let parser = load_parser(args, &devices[0])?;
             tracing::info!("Page parser loaded; parsing {total_pages} page(s)");
-            let mut options = AnyPageParserOptions::default();
-            if let Some(tokens) = args.max_tokens {
-                options = options.with_max_new_tokens(tokens);
-            }
             process_inputs(
                 inputs,
                 &cli.common,
                 destinations,
                 mode,
-                1,
-                |images, pages, _| {
-                    images
-                        .into_iter()
-                        .zip(pages)
-                        .map(|(image, (input, _))| {
-                            let path = &input.path;
-                            let page = parser
-                                .parse_page(&image, &options)
-                                .with_context(|| format!("could not parse {}", path.display()))?;
-                            for diagnostic in &page.diagnostics {
-                                tracing::warn!("{}: {}", path.display(), diagnostic.message);
-                            }
-                            let text = page.markdown.clone().unwrap_or_else(|| {
-                                let blocks = page
-                                    .blocks
-                                    .iter()
-                                    .filter_map(|b| b.content.as_deref())
-                                    .collect::<Vec<_>>()
-                                    .join("\n\n");
-                                if blocks.is_empty() {
-                                    page.raw_output.clone().unwrap_or_default()
-                                } else {
-                                    blocks
-                                }
-                            });
-                            Ok(Document {
-                                text,
-                                json: page.to_json(image.width(), image.height()),
-                            })
-                        })
-                        .collect()
-                },
+                batch_size,
+                true,
+                |images, pages, _| parse_documents(&parser, &images, &options, pages[0].0),
             )
         }
     }
+}
+
+fn parse_documents(
+    parser: &AnyPageParser,
+    images: &[RgbImage],
+    options: &AnyPageParserOptions,
+    input: &Input,
+) -> Result<Vec<Document>> {
+    let document = parser
+        .parse_document(images, options)
+        .with_context(|| format!("could not parse {}", input.path.display()))?;
+    ensure!(
+        document.pages.len() == images.len(),
+        "parser returned an unexpected number of pages"
+    );
+    Ok(document
+        .pages
+        .into_iter()
+        .zip(images)
+        .map(|(page, image)| {
+            for diagnostic in &page.diagnostics {
+                tracing::warn!("{}: {}", input.path.display(), diagnostic.message);
+            }
+            let text = page.markdown.clone().unwrap_or_else(|| {
+                let blocks = page
+                    .blocks
+                    .iter()
+                    .filter_map(|b| b.content.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                if blocks.is_empty() {
+                    page.raw_output.clone().unwrap_or_default()
+                } else {
+                    blocks
+                }
+            });
+            Document {
+                text,
+                json: page.to_json(image.width(), image.height()),
+            }
+        })
+        .collect())
 }
 
 /// Hand each worker one of the requested devices, in order.
@@ -437,13 +427,17 @@ where
     }
 }
 
+fn default_cpu_threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |count| count.get().min(8))
+}
+
 fn classic_device(device: &str, verbose: bool) -> Result<OrtSessionConfig> {
     let config = ort_device(device, verbose)?;
     // Intra-op scaling flattens out around eight threads on CPU.
     let threads = if config.has_accelerator_provider() {
         4
     } else {
-        std::thread::available_parallelism().map_or(4, |count| count.get().min(8))
+        default_cpu_threads()
     };
     Ok(config.with_intra_threads(threads))
 }
@@ -632,12 +626,36 @@ fn output_paths(inputs: &[Input], common: &Common, json: bool) -> Result<Option<
     Ok(Some(outputs))
 }
 
+/// Ranges in flattened page order, with optional input boundaries for joint requests.
+fn page_batches(
+    page_counts: impl IntoIterator<Item = usize>,
+    batch_size: usize,
+    per_input: bool,
+) -> Vec<Range<usize>> {
+    let lengths: Vec<_> = page_counts.into_iter().collect();
+    let lengths = if per_input {
+        lengths
+    } else {
+        vec![lengths.iter().sum()]
+    };
+    let mut batches = Vec::new();
+    let mut start = 0;
+    for length in lengths {
+        for offset in (0..length).step_by(batch_size) {
+            batches.push(start + offset..start + (offset + batch_size).min(length));
+        }
+        start += length;
+    }
+    batches
+}
+
 fn process_inputs(
     inputs: &[Arc<Input>],
     common: &Common,
     destinations: Option<Vec<PathBuf>>,
     mode: OutputMode,
     batch_size: usize,
+    per_input: bool,
     mut process: impl FnMut(Vec<RgbImage>, &[(&Input, usize)], usize) -> Result<Vec<Document>>,
 ) -> Result<()> {
     let mut out = io::stdout().lock();
@@ -648,11 +666,13 @@ fn process_inputs(
         .iter()
         .map(|input| &**input)
         .flat_map(|input| input.pages.iter().map(move |number| (input, *number)));
-    loop {
-        let chunk = pages.by_ref().take(batch_size).collect::<Vec<_>>();
-        if chunk.is_empty() {
-            break;
-        }
+    let batches = page_batches(
+        inputs.iter().map(|input| input.pages.len()),
+        batch_size,
+        per_input,
+    );
+    for batch in batches {
+        let chunk = pages.by_ref().take(batch.len()).collect::<Vec<_>>();
         let images = chunk
             .iter()
             .map(|(input, number)| {
@@ -763,6 +783,7 @@ struct ParallelRun {
     destinations: Option<Vec<PathBuf>>,
     mode: OutputMode,
     batch_size: usize,
+    per_input: bool,
     replica_count: usize,
 }
 
@@ -784,6 +805,7 @@ where
         destinations,
         mode,
         batch_size,
+        per_input,
         replica_count,
     } = run;
     let total: usize = inputs.iter().map(|input| input.pages.len()).sum();
@@ -800,8 +822,16 @@ where
                 .map(|number| (Arc::clone(input), *number))
         })
         .collect();
-    let chunks: Vec<Vec<(Arc<Input>, usize)>> =
-        pages.chunks(batch_size).map(<[_]>::to_vec).collect();
+    let batches = page_batches(
+        inputs.iter().map(|input| input.pages.len()),
+        batch_size,
+        per_input,
+    );
+    let chunks: Vec<Vec<(Arc<Input>, usize)>> = batches
+        .iter()
+        .map(|batch| pages[batch.clone()].to_vec())
+        .collect();
+    let starts: Vec<_> = batches.iter().map(|batch| batch.start).collect();
     let render = Arc::new(
         move |chunk: &[(Arc<Input>, usize)]| -> Result<Vec<RgbImage>> {
             chunk
@@ -817,16 +847,16 @@ where
     let process = Arc::new(process);
     let mut index = 0usize;
     let write_chunk = |chunk_index: usize, documents: Result<Vec<Document>>| -> Result<()> {
-        let documents = documents.with_context(|| match pages.get(chunk_index * batch_size) {
+        let batch = &batches[chunk_index];
+        let documents = documents.with_context(|| match pages.get(batch.start) {
             Some((input, number)) => format!(
                 "could not process batch starting at {} page {number}",
                 input.path.display()
             ),
             None => "could not process a batch".to_string(),
         })?;
-        let expected = pages.len() - (chunk_index * batch_size).min(pages.len());
         ensure!(
-            documents.len() == expected.min(batch_size),
+            documents.len() == batch.len(),
             "pipeline returned an unexpected number of pages"
         );
         for ((input, number), mut document) in pages[index..index + documents.len()]
@@ -846,10 +876,21 @@ where
         make_replica,
         move |replica: &mut M, chunk_index: usize, chunk: Vec<(Arc<Input>, usize)>| {
             let images = render(&chunk)?;
-            process(replica, images, &chunk, chunk_index * batch_size)
+            process(replica, images, &chunk, starts[chunk_index])
         },
         write_chunk,
     )?;
     finish_output(&mut out, destinations.is_none(), json, array)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn joint_batches_keep_input_boundaries() {
+        assert_eq!(page_batches([3, 12], 10, true), vec![0..3, 3..13, 13..15]);
+        assert_eq!(page_batches([3, 12], 10, false), vec![0..10, 10..15]);
+    }
 }
