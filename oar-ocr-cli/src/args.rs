@@ -82,6 +82,12 @@ pub(crate) enum PageFormat {
 
 #[derive(Args)]
 pub(crate) struct Ocr {
+    /// Select the printed Thai and English recognition pipeline
+    #[arg(long,value_enum,conflicts_with_all=["size","det","rec","dict"])]
+    pub(crate) preset: Option<OcrPreset>,
+    /// Load the preset files using upstream names from this directory
+    #[arg(long, requires = "preset", value_name = "DIR")]
+    pub(crate) model_dir: Option<PathBuf>,
     /// PP-OCRv6 preset size
     #[arg(long, value_enum, default_value = "tiny", conflicts_with_all = ["det", "rec", "dict"])]
     pub(crate) size: OcrSize,
@@ -91,6 +97,11 @@ pub(crate) struct Ocr {
     pub(crate) format: OcrFormat,
     #[arg(required = true, value_name = "INPUTS", num_args = 1..)]
     pub(crate) images: Vec<PathBuf>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum OcrPreset {
+    Openthai,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -170,8 +181,9 @@ pub(crate) struct Parse {
     /// Load PP-DocLayout from a local directory for layout-composed models
     #[arg(long, value_name = "DIR")]
     pub(crate) layout_dir: Option<PathBuf>,
-    #[arg(long, value_enum, default_value = "modelscope")]
-    pub(crate) source: Source,
+    /// Override the model's default download source.
+    #[arg(long, value_enum)]
+    pub(crate) source: Option<Source>,
     /// Maximum generated tokens per page or region
     #[arg(long, value_parser = positive)]
     pub(crate) max_tokens: Option<usize>,

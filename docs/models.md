@@ -81,6 +81,17 @@ PP-OCRv6 is the newest PP-OCR generation. The flat ONNX files and dictionaries a
 | small | [`pp-ocrv6_small_rec.onnx`](https://github.com/GreatV/oar-ocr/releases/download/v0.7.0/pp-ocrv6_small_rec.onnx) | [`ppocrv6_dict.txt`](https://github.com/GreatV/oar-ocr/releases/download/v0.7.0/ppocrv6_dict.txt) (18708 characters) | 20.2 MiB | [`PP-OCRv6_small_rec_onnx_infer.tar`](https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_small_rec_onnx_infer.tar) |
 | medium | [`pp-ocrv6_medium_rec.onnx`](https://github.com/GreatV/oar-ocr/releases/download/v0.7.0/pp-ocrv6_medium_rec.onnx) | [`ppocrv6_dict.txt`](https://github.com/GreatV/oar-ocr/releases/download/v0.7.0/ppocrv6_dict.txt) (18708 characters) | 73.0 MiB | [`PP-OCRv6_medium_rec_onnx_infer.tar`](https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_rec_onnx_infer.tar) |
 
+## OpenThai Text
+
+The [OpenThai2.0-OCR-Text v2.1 checkpoint](https://huggingface.co/iapp/OpenThai2.0-OCR-Text/tree/f5b8a1a3f807e26816af28e1f9f4789f7731a04d) shares the registered PP-OCRv6 Tiny detector. Its two f32 recognizers use the same 528-character Thai and English dictionary. The models and runtime are licensed under Apache-2.0.
+
+| File in the model directory | Registered filename | Bytes |
+|---|---|---:|
+| det.onnx | pp-ocrv6_tiny_det.onnx | 1,780,590 |
+| rec.onnx | openthai2_rec.onnx | 2,392,837 |
+| rec2.onnx | openthai2_rec2.onnx | 2,392,837 |
+| rec_dict.txt | openthai2_dict.txt | 1,783 |
+
 ## Character Dictionaries
 
 Character dictionaries are required for text recognition. Choose the appropriate dictionary for your model:
@@ -244,3 +255,7 @@ Note: the resolver compares paths verbatim — `~` is not expanded. Pass a bare 
 - Files land at `$OAR_HOME/<name>`, flat (no per-revision subdirectories).
 - Downloads stream into a unique `$OAR_HOME/.<name>.<pid>.<n>.part` and are renamed atomically once the SHA-256 matches, so a crash mid-download won't poison the cache and concurrent processes don't clobber each other.
 - After verification a `$OAR_HOME/.<name>.sha256` sidecar records the verified hash. Future loads with a matching cache file + sidecar skip the multi-second rehash. Deleting the sidecar forces a fresh hash check.
+
+### OpenThai2.0-OCR-Markdown and Nemotron-3.5-Parse
+
+The VL parser accepts the explicit IDs `iapp/OpenThai2.0-OCR-Markdown` and `nvidia/Nemotron-3.5-Parse`. The default download uses the linked Hugging Face revisions. Each snapshot contains the encoder and decoder in `model.safetensors`, the tokenizer in `tokenizer.json` and the decoding defaults in `generation_config.json`. Both models use the OpenMDW-1.1 license and provide a separate MIT tokenizer attribution. [OpenThai checkpoint](https://huggingface.co/iapp/OpenThai2.0-OCR-Markdown/tree/b6d9c95c9542de44ab03744d56b841ed212035e3) · [NVIDIA checkpoint](https://huggingface.co/nvidia/Nemotron-3.5-Parse/tree/ea2e1fe486bea3e7d0d505df9bafa4ad562407a0)

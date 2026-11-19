@@ -25,6 +25,7 @@ Install the standalone tool with `cargo install oar-ocr-cli` (or add `--features
 
 ```bash
 oar ocr page.png
+oar ocr --preset openthai thai-page.png --device cpu
 oar indra page.png --device cpu
 oar structure page.png -o documents
 oar parse --model PaddlePaddle/PaddleOCR-VL-1.5 page.png
@@ -169,6 +170,8 @@ Both pipelines export the same [page JSON](docs/page-format.md): `page.to_json(w
 
 ## Supported Models
 
+OpenThai2.0-OCR-Text reads printed Thai and English into ordered lines and word boxes. Its second recognizer handles Latin look-alikes in loopless Thai fonts. [OpenThai usage guide](docs/usage.md#openthai-text)
+
 The classic pipeline runs ONNX models through ONNX Runtime and supports the following model families. See the [pre-trained model guide](docs/models.md) for exact checkpoints, dictionaries, download links, and auto-download names.
 
 ### Classic ONNX Models
@@ -203,6 +206,8 @@ The [`oar-ocr-vl`](oar-ocr-vl/README.md) crate provides native [Candle](https://
 | [MiniCPM-OCR 1.0](https://huggingface.co/openbmb/MiniCPM-OCR-1.0) | 1.3B | PP-DocLayout page parsing and text, formula, OTSL table, chart, and seal recognition (SigLIP + Qwen3.5) |
 | [MonkeyOCRv2-B-Parsing](https://huggingface.co/zenosai/MonkeyOCRv2-B-Parsing) | 0.7B | Higher-capacity ViT-B variant with the same parsing and recognition tasks |
 | [MonkeyOCRv2-S-Parsing](https://huggingface.co/zenosai/MonkeyOCRv2-S-Parsing) | 0.6B | Two-stage page parsing, dewarp, layout, text, formula, and OTSL-table recognition |
+| [Nemotron-3.5-Parse](https://huggingface.co/nvidia/Nemotron-3.5-Parse) | 0.63B | Visual-prefix document parsing with content-normalized boxes |
+| [OpenThai2.0-OCR-Markdown](https://huggingface.co/iapp/OpenThai2.0-OCR-Markdown) | 0.63B | Printed Thai and English pages with ordered blocks, Markdown and HTML tables |
 | [OvisOCR2](https://huggingface.co/ATH-MaaS/OvisOCR2) | 0.8B | Model-native full-page document-to-Markdown parsing |
 | [OvisOCR3](https://huggingface.co/ATH-MaaS/OvisOCR3) | 0.8B | Model-native Markdown or structured page parsing, text, formula, HTML table, and chart recognition |
 | [OXR-1.0](https://huggingface.co/SoMarkAI/OXR-1.0) | 1.4B | PP-DocLayout page parsing and text, formula, HTML table, code, and chemical-structure recognition |

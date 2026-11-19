@@ -266,7 +266,7 @@ Boxes are in the upright page: `page.rotation` is the quarter turn that was undo
 
 Examples default to `--device auto` (case-insensitive). Classic pipelines try compiled CUDA(0), CoreML on Apple platforms, and DirectML(0) on Windows, then CPU. Library callers opt in with `OrtSessionConfig::auto()`; existing defaults remain CPU, and `resolve_auto()` explicitly queries the resolved configuration. Failed registrations are omitted during construction, before choosing CPU batch defaults. TensorRT, OpenVINO, and WebGPU remain explicit choices because of initialization cost and compatibility. When CUDA is compiled but no GPU is available, ONNX Runtime prints an ERROR log during probing: `CUDA failure 100: no CUDA-capable device is detected`. This is expected; execution then falls back to CPU.
 
-VL tries compiled CUDA(0), then Metal(0), then CPU. Use `oar_ocr_vl::auto_device()` or `oar_ocr_vl::utils::parse_device("auto")` in library code. Device creation failures fall back automatically; the existing dtype probe selects F32 on CPU and on accelerators without BF16 support, BF16 when the device supports it and a BF16 probe succeeds, or F16 when that probe fails. Use `--device cpu` to require CPU execution in either pipeline.
+VL tries compiled CUDA(0), then Metal(0), then CPU. Use `oar_ocr_vl::auto_device()` or `oar_ocr_vl::utils::parse_device("auto")` in library code. Device creation failures fall back automatically. For models that use automatic dtype selection, the probe selects F32 on CPU and on accelerators without BF16 support, BF16 when the device supports it and a BF16 probe succeeds, or F16 when that probe fails. Use `--device cpu` to require CPU execution in either pipeline.
 
 ### CUDA
 
@@ -535,14 +535,14 @@ Chart-region recognition in `DocParser` is opt-in through `PaddleOcrVl::with_cha
 
 ```toml
 [dependencies]
-oar-ocr-vl = "0.10"
+oar-ocr-vl = "0.11"
 ```
 
 For GPU acceleration, enable CUDA:
 
 ```toml
 [dependencies]
-oar-ocr-vl = { version = "0.10", features = ["cuda"] }
+oar-ocr-vl = { version = "0.11", features = ["cuda"] }
 ```
 
 On macOS, use the `metal` feature instead.
@@ -1235,7 +1235,15 @@ On Windows, examples built with `--features directml` also accept `--device dire
 
 ### ONNX Runtime logging
 
-OAR defaults ONNX Runtime's global logging to Error only when it initializes the environment itself; an environment configured by the application is preserved. Explicit session logging requests lower an OAR-owned environment's threshold to the lowest requested severity; subsequent sessions do not raise it again. To see ORT warnings, call `ort::init().commit()` and set `ort::environment::Environment::current()?.set_log_level(ort::logging::LogLevel::Warning)` before constructing any OAR model.
+OAR creates one shared ONNX Runtime environment on first use and sets its log level to Error. Explicit session logging requests lower this threshold to the lowest requested severity. Applications using ort directly can call `oar_ocr::core::inference::initialize_ort_environment()?` to obtain the shared handle and pass it to `ort::session::Session::builder(&env)?`. In 0.11 the initializer returns this handle in place of the former boolean.
+
+To supply your own logger, providers, or thread pool, build a single environment with ort 2.0.0-rc.15 and install it before resolving devices or creating OAR models. OAR keeps the handle and preserves the application's logging policy.
+
+```rust
+let env = ort::init().build()?;
+env.set_log_level(ort::logging::LogLevel::Warning);
+oar_ocr::core::inference::set_ort_environment(env.clone())?;
+```
 
 ### Device-aware batching
 
@@ -1260,3 +1268,32 @@ let det_config = TextDetectionConfig {
     ..Default::default()
 };
 ```
+
+## OpenThai Text
+
+The OpenThai v2.1 preset reads printed Thai and English. It detects lines, corrects page orientation and skew, and orders lines by column and row. The primary and secondary recognizers share a dictionary. Use `without_secondary_recognizer()` to read with the primary recognizer alone.
+
+```rust
+use oar_ocr::{oarocr::OAROCRBuilder, utils::load_image};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let reader = OAROCRBuilder::openthai_from_dir("checkpoints/OpenThai2.0-OCR-Text").build()?;
+    for prediction in reader.predict_with_rows(vec![load_image("thai-page.png")?])? {
+        println!("{}", prediction.page.text_by_rows(&prediction.row_ids)?);
+    }
+    Ok(())
+}
+```
+
+Use `predict` for ordinary `OAROCRResult` pages. Use `predict_with_rows` to get the row IDs needed to join neighboring cells with spaces and distinct rows with newlines. With automatic model downloads enabled, use `OAROCRBuilder::openthai()` to resolve the registered filenames. [Model files](models.md#openthai-text)
+
+## OpenThai Markdown and Nemotron Parse
+
+Run single-pass document parsing with the checkpoint's repository ID. Each result contains the generated token stream, ordered blocks with content-normalized boxes, rendered Markdown and table conversion diagnostics. Native tables render as HTML so merged cells retain their row and column spans.
+
+```bash
+oar parse --model iapp/OpenThai2.0-OCR-Markdown --model-dir checkpoints/openthai page.png
+oar parse --model nvidia/Nemotron-3.5-Parse --model-dir checkpoints/nemotron page.png
+```
+
+Use `--source huggingface` with a model ID to resolve a snapshot. Both checkpoints use f32 on every device, including CUDA, and produce layout and content in a single decoding pass.
