@@ -1,6 +1,6 @@
 # OAR command-line tool
 
-`oar` provides PP-OCR, Indra OCR, document structure analysis, and vision-language page parsing. Missing classic and VL models download automatically from ModelScope by default; Indra downloads directly from Hugging Face. The default device is `auto`, selecting compiled accelerators before CPU.
+`oar` provides PP-OCR, Indra OCR, OpenThai Text, document structure analysis, and vision-language page parsing. Missing classic and VL models download automatically from ModelScope by default; Indra downloads directly from Hugging Face. The default device is `auto`, selecting compiled accelerators before CPU.
 
 ## Install
 
@@ -38,7 +38,7 @@ Use `--format json` for structured results. Structure, Indra, and parse emit the
 
 `ATH-MaaS/OvisOCR3` selects the v3 Markdown page protocol without an external layout model. Structured parsing is available through the library's `OvisOcr3ParseOptions`; see the [OvisOCR3 guide](../oar-ocr-vl/README.md#ovisocr3).
 
-Inputs can be individual images or PDFs for all four commands. PDF detection uses the `%PDF-` content signature, regardless of the filename extension. Pages are rendered on a white background as needed: OCR and structure process batches of at most eight pages across inputs, Indra defaults to max(8, 4 × workers) pages per replica, and VL parsing processes one page at a time except for Unlimited-OCR-2's joint page windows. The ordered dispatch window bounds rendered-image memory across replicas. `--pages 1-3,5` selects 1-based PDF page numbers in document order, removing duplicates; without it, every page is processed. The selection applies to each PDF, and requesting a page beyond its page count is an error. `--dpi N` controls PDF rendering resolution; the default 144 DPI matches the examples' 2× scale. Both options leave image inputs unchanged. Directory recursion and service modes are not supported.
+Inputs can be individual images or PDFs for all four commands. PDF detection uses the `%PDF-` content signature, regardless of the filename extension. Pages are rendered on a white background as needed: PP-OCR, OpenThai Text and structure process batches of at most eight pages across inputs, Indra defaults to max(8, 4 × workers) pages per replica, and VL parsing processes one page at a time except for Unlimited-OCR-2's joint page windows. The ordered dispatch window bounds rendered-image memory across replicas. `--pages 1-3,5` selects 1-based PDF page numbers in document order, removing duplicates; without it, every page is processed. The selection applies to each PDF, and requesting a page beyond its page count is an error. `--dpi N` controls PDF rendering resolution; the default 144 DPI matches the examples' 2× scale. Both options leave image inputs unchanged. Directory recursion and service modes are not supported.
 
 With `-o DIR`, PDFs produce `<stem>_p<N>.md` or `.json` for each selected page, retaining the original 1-based page numbers. Text and Markdown on stdout include `<!-- filename: page N -->` markers. PDF JSON on stdout is always an array of per-page objects, even when only one page is selected. Structure, Indra, and parse use the page format's `page.index` plus `source`; OCR PDF results keep their existing `page_number` and `input_path` fields. Outputs are written incrementally; a later page error may leave earlier files or partial stdout output.
 
@@ -47,6 +47,15 @@ oar ocr document.pdf --pages 1-3,5 --dpi 144 -o pages
 oar structure document.pdf --format json
 oar parse --model PaddlePaddle/PaddleOCR-VL-1.5 document.pdf --pages 2
 ```
+
+## OpenThai Text
+
+```bash
+oar ocr --preset openthai page.png --device cpu
+oar ocr --preset openthai report.pdf --model-dir checkpoints/OpenThai2.0-OCR-Text --format json
+```
+
+The default output joins Thai and English text in page reading order. JSON contains ordinary OCR regions, recognition confidence and original-image line and word boxes. The default build resolves the pinned inference files through the model registry. Use `--model-dir` to read the four upstream files locally.
 
 ## Indra OCR
 
@@ -64,3 +73,5 @@ Without `--model-dir`, Indra downloads `datalab-to/indra-ocr` at the pinned, par
 `--batch-size N` overrides the per-replica default of max(8, 4 × workers); batches smaller than the worker count can leave workers idle. Markdown is the default output, `--format text` joins lines in reading order, and `--format json` emits the shared page schema with `pipeline: "indra"`. Non-JSON files use the same `.md` extension as the other commands. Boxes and dimensions refer to the upright page.
 
 `--keep-furniture` retains headers and footers in Markdown. `--table-heads` enables the optional reading-order table heads. `--math` reads math lines as inline LaTeX and additionally requires `math_meta.json`, `mathcls.onnx`, `math_enc.onnx`, `math_dec_init.onnx`, and `math_dec_step.onnx`. PDFs use the shared rasterizer, page selection, and DPI options.
+
+Use `oar parse --model iapp/OpenThai2.0-OCR-Markdown page.png` for the Thai fine-tune or `oar parse --model nvidia/Nemotron-3.5-Parse page.png` for the base checkpoint. Both return page Markdown with HTML tables. Add `--model-dir DIR` to use local weights.

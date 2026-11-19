@@ -48,6 +48,16 @@ pub struct OAROCRResult {
     pub rectified_img: Option<Arc<RgbImage>>,
 }
 
+/// An OCR page and its row assignments in reading order.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct OAROCRPageWithRows {
+    /// The recognized page.
+    pub page: OAROCRResult,
+    /// One row ID per text region, used by [`OAROCRResult::text_by_rows`].
+    pub row_ids: Vec<usize>,
+}
+
 impl OAROCRResult {
     /// Returns an iterator over text regions that have recognized text.
     pub fn recognized_text_regions(&self) -> impl Iterator<Item = &TextRegion> {
@@ -67,6 +77,27 @@ impl OAROCRResult {
             .iter()
             .filter_map(|region| region.text.as_ref().map(|s| s.as_ref()))
             .collect()
+    }
+
+    /// Join recognized regions using a space within each row and a newline between distinct row IDs.
+    pub fn text_by_rows(&self, rows: &[usize]) -> Result<String, oar_ocr_core::core::OCRError> {
+        if rows.len() != self.text_regions.len() {
+            return Err(oar_ocr_core::core::OCRError::invalid_input(
+                "one row ID is required per text region",
+            ));
+        }
+        let mut text = String::new();
+        let mut last = None;
+        for (&row, region) in rows.iter().zip(&self.text_regions) {
+            if let Some(part) = &region.text {
+                if let Some(previous) = last {
+                    text.push(if row == previous { ' ' } else { '\n' });
+                }
+                text.push_str(part);
+                last = Some(row);
+            }
+        }
+        Ok(text)
     }
 
     /// Returns all recognized text concatenated with the specified separator.

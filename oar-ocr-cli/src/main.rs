@@ -38,6 +38,8 @@ const PARSERS: &[AnyPageParserModel] = &[
     AnyPageParserModel::MiniCpmOcr,
     AnyPageParserModel::MonkeyOcrV2S,
     AnyPageParserModel::MonkeyOcrV2B,
+    AnyPageParserModel::Nemotron35Parse,
+    AnyPageParserModel::OpenThaiMarkdown,
     AnyPageParserModel::OvisOcr2,
     AnyPageParserModel::OvisOcr3,
     AnyPageParserModel::Oxr,
@@ -170,6 +172,10 @@ fn run(cli: Cli) -> Result<()> {
             let build = |device: &str| -> Result<_> {
                 let builder = match (&args.models.det, &args.models.rec, &args.models.dict) {
                     (Some(det), Some(rec), Some(dict)) => OAROCRBuilder::new(det, rec, dict),
+                    (None, None, None) if args.preset.is_some() => match &args.model_dir {
+                        Some(dir) => OAROCRBuilder::openthai_from_dir(dir),
+                        None => OAROCRBuilder::openthai(),
+                    },
                     (None, None, None) => OAROCRBuilder::pp_ocrv6(args.size.into()),
                     _ => bail!("custom OCR models require --det, --rec, and --dict together"),
                 };
@@ -200,15 +206,16 @@ fn run(cli: Cli) -> Result<()> {
                      first_index: usize|
                      -> Result<Vec<Document>> {
                         model
-                            .predict(images)?
+                            .predict_with_rows(images)?
                             .into_iter()
                             .zip(pages.iter().map(|(input, number)| (&**input, *number)))
                             .enumerate()
-                            .map(|(offset, (mut page, (input, _)))| {
+                            .map(|(offset, (prediction, (input, _)))| {
+                                let mut page = prediction.page;
                                 page.input_path = input.path.to_string_lossy().into_owned().into();
                                 page.index = first_index + offset;
                                 Ok(Document {
-                                    text: page.concatenated_text("\n"),
+                                    text: page.text_by_rows(&prediction.row_ids)?,
                                     json: serde_json::to_value(page)?,
                                 })
                             })
@@ -227,15 +234,16 @@ fn run(cli: Cli) -> Result<()> {
                 false,
                 |images, pages, first_index| {
                     model
-                        .predict(images)?
+                        .predict_with_rows(images)?
                         .into_iter()
                         .zip(pages)
                         .enumerate()
-                        .map(|(offset, (mut page, (input, _)))| {
+                        .map(|(offset, (prediction, (input, _)))| {
+                            let mut page = prediction.page;
                             page.input_path = input.path.to_string_lossy().into_owned().into();
                             page.index = first_index + offset;
                             Ok(Document {
-                                text: page.concatenated_text("\n"),
+                                text: page.text_by_rows(&prediction.row_ids)?,
                                 json: serde_json::to_value(page)?,
                             })
                         })
@@ -495,7 +503,7 @@ fn ort_device(device: &str, verbose: bool) -> Result<OrtSessionConfig> {
 
 #[cfg(any(feature = "cuda", feature = "metal", feature = "coreml"))]
 fn probe_classic_device(device: &str) -> Result<()> {
-    oar_ocr::core::inference::initialize_ort_environment()?;
+    let environment = oar_ocr::core::inference::initialize_ort_environment()?;
     let provider = match device {
         #[cfg(feature = "cuda")]
         cuda if cuda.starts_with("cuda:") => ort::ep::CUDA::default()
@@ -506,7 +514,7 @@ fn probe_classic_device(device: &str) -> Result<()> {
         "metal" => ort::ep::CoreML::default().build().error_on_failure(),
         _ => bail!("device requires its corresponding accelerator feature"),
     };
-    let builder = ort::session::Session::builder()?
+    let builder = ort::session::Session::builder(&environment)?
         .with_intra_threads(1)
         .map_err(ort::Error::<()>::from)?;
     builder
@@ -556,11 +564,13 @@ fn load_parser(args: &args::Parse, device: &str) -> Result<AnyPageParser> {
     #[cfg(feature = "auto-download")]
     {
         use oar_ocr_vl::{AnyPageParserPretrainedOptions, DownloadSource};
-        let source = match args.source {
-            args::Source::Modelscope => DownloadSource::ModelScope,
-            args::Source::Huggingface => DownloadSource::HuggingFace,
-        };
-        let mut options = AnyPageParserPretrainedOptions::default().with_source(source);
+        let mut options = AnyPageParserPretrainedOptions::default();
+        if let Some(source) = args.source {
+            options = options.with_source(match source {
+                args::Source::Modelscope => DownloadSource::ModelScope,
+                args::Source::Huggingface => DownloadSource::HuggingFace,
+            });
+        }
         if let Some(layout) = &args.layout_dir {
             options = options.with_layout_dir(layout);
         }
